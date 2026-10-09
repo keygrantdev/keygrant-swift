@@ -16,8 +16,8 @@ public final class License: Sendable {
     let major: Int
     /// The API base, without a trailing slash.
     let base: String
-    /// The product's Ed25519 public key, raw.
-    let publicKey: Data
+    /// The product's Ed25519 public keys, raw, with their ids.
+    let keys: KeySet
     let httpTimeout: TimeInterval
     let deviceHold: Bool
     let deviceName: String?
@@ -42,7 +42,7 @@ public final class License: Sendable {
     }
 
     init(_ config: LicenseConfig, timing: Timing) throws {
-        publicKey = try publicKeyBytes(fromJWK: config.publicJWK)
+        keys = try KeySet(publicJWK: config.publicJWK)
         product = config.product
         // As the server reads it (`majorOf`): one reading, used wherever the major is.
         major = majorOf(config.major)
@@ -101,6 +101,23 @@ public final class License: Sendable {
             let status = await self.statusNow(state, force: forceOnline, readOnly: readOnly)
             return readOnly ? status.stalled() : status
         }
+    }
+
+    /// Whether the licence this device holds grants the entitlement `code`: a flag that is on, a
+    /// number that is not zero, or a text that is not empty (`grants`). Offline, from the stored
+    /// lease only: the entitlements of the status `status()` gives from what is stored, with no ask
+    /// and no write, so a licence that does not license this build, and none at all, grant nothing.
+    /// A running trial grants what its trial lease does. A state that cannot be read grants nothing
+    /// just now.
+    public func has(_ code: String) async -> Bool {
+        guard let state = await loadForStatus(readOnly: true) else { return false }
+        return grants(await statusNow(state, force: false, readOnly: true).entitlements, code)
+    }
+
+    /// As `has(_:)`, but throwing `MissingEntitlement`, which names `code`, when the licence does not
+    /// grant that entitlement: for work that may run only when it does.
+    public func require(_ code: String) async throws {
+        if await !has(code) { throw MissingEntitlement(entitlement: code) }
     }
 
     /// `status()` forced online, whatever the waits say: call it when the customer says they have

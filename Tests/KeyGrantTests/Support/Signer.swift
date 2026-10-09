@@ -19,6 +19,9 @@ struct Signer: Sendable {
         privateKey = Curve25519.Signing.PrivateKey().rawRepresentation
     }
 
+    /// The id a lease names this key by (its thumbprint), as a check-in reports it.
+    var kid: String { (try? publicKeyBytes(fromJWK: publicJWK)).map(keyId(ofKey:)) ?? "" }
+
     /// The public key as a JWK, as provisioning hands it out.
     var publicJWK: String {
         let x = (try? Curve25519.Signing.PrivateKey(rawRepresentation: privateKey))

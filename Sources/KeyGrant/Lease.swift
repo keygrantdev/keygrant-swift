@@ -121,6 +121,8 @@ func isWhole(_ value: Double) -> Bool {
 /// Why a lease does not verify.
 enum VerifyFailure: String, Sendable, Hashable {
     case malformed
+    /// It names a key (`kid`) the key set does not hold.
+    case unknownKey = "unknown-key"
     case badSignature = "bad-signature"
     case badClaims = "bad-claims"
     case expired
@@ -145,21 +147,27 @@ enum VerifyResult: Sendable, Hashable {
     }
 }
 
-/// A lease verified offline, in this order: exactly three parts (the header is NOT read: the
-/// algorithm and the key are the verifier's); the signature, canonical base64url (else
-/// `malformed`), over `header.payload` exactly as received (else `bad-signature`); the payload,
+/// A lease verified offline against a key set, in this order: exactly three parts; the
+/// signature, canonical base64url (else `malformed`); the key the header names by its id (`kid`),
+/// `unknown-key` when the set holds none of that id, or each key in turn for a lease that names
+/// none; Ed25519 over `header.payload` exactly as received (else `bad-signature`); the payload,
 /// canonical base64url of JSON matching the claims (else `bad-claims`); then the end, in
-/// milliseconds: a lease is valid during its `exp` second and not one millisecond after it.
-func verifyLease(_ token: String, publicKey: Data, now: Int) -> VerifyResult {
+/// milliseconds: a lease is valid during its `exp` second and not one millisecond after it. The
+/// header is read for `kid` only: the algorithm is the verifier's, never the token's.
+func verifyLease(_ token: String, keys: KeySet, now: Int) -> VerifyResult {
     let parts = jsSplit(token, ".")
     guard parts.count == 3 else { return .invalid(.malformed, nil) }
     let header = parts[0], payload = parts[1], signature = parts[2]
-    guard let signatureBytes = canonicalBase64URLDecode(signature),
-        let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey)
-    else { return .invalid(.malformed, nil) }
-    guard key.isValidSignature(signatureBytes, for: Data("\(header).\(payload)".utf8)) else {
-        return .invalid(.badSignature, nil)
+    guard let signatureBytes = canonicalBase64URLDecode(signature) else { return .invalid(.malformed, nil) }
+    let kid = keyId(ofHeader: header)
+    let candidates = keys.keys.filter { kid == nil || $0.kid == kid }
+    if candidates.isEmpty { return .invalid(.unknownKey, nil) }
+    let signed = Data("\(header).\(payload)".utf8)
+    let holds = candidates.contains { candidate in
+        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: candidate.key) else { return false }
+        return key.isValidSignature(signatureBytes, for: signed)
     }
+    guard holds else { return .invalid(.badSignature, nil) }
     // Decoded as TextDecoder does (an invalid byte sequence becomes U+FFFD, a byte-order mark is
     // dropped), then read as JSON.parse reads it.
     guard let payloadBytes = canonicalBase64URLDecode(payload),
@@ -204,7 +212,7 @@ func canonicalBase64URLDecode(_ input: String) -> Data? {
 
 /// Bytes from base64url read leniently, as `atob` reads it (the URL-safe alphabet mapped back,
 /// padded to a whole quantum, ASCII whitespace skipped, the unused bits of the last character not
-/// checked): for the product's public key, whose `x` may have been pasted with its padding. Nil
+/// checked): the decoding `canonicalBase64URLDecode` then holds to the canonical spelling. Nil
 /// where `atob` throws.
 func base64URLDecode(_ input: String) -> Data? {
     var units = input.utf16.map { unit -> UInt16 in
@@ -260,43 +268,6 @@ func base64URLEncode(_ bytes: Data) -> String {
     text = text.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
     while text.hasSuffix("=") { text.removeLast() }
     return text
-}
-
-// MARK: - the product's public key
-
-/// The raw Ed25519 key a product's public JWK holds (or its bare `x`), checked as WebCrypto's
-/// `importKey('jwk', ..., ['verify'])` checks it: `kty` OKP, `crv` Ed25519, no private `d`, `use`
-/// (when given) `sig`, `key_ops` (when given) naming `verify`, `alg` (when given) EdDSA or Ed25519,
-/// and an `x` of 32 bytes.
-func publicKeyBytes(fromJWK text: String) throws -> Data {
-    let trimmed = jsTrim(text)
-    var x = trimmed
-    if trimmed.hasPrefix("{") {
-        guard case .object(let jwk)? = JSONText.parse(trimmed) else {
-            throw LicenseConfigError.invalidPublicKey("not a JSON object")
-        }
-        guard jwk["kty"]?.stringValue == "OKP", jwk["crv"]?.stringValue == "Ed25519" else {
-            throw LicenseConfigError.invalidPublicKey("not an Ed25519 key (kty OKP, crv Ed25519)")
-        }
-        guard jwk["d"] == nil else {
-            throw LicenseConfigError.invalidPublicKey("it holds the PRIVATE key (d): embed only the public key")
-        }
-        if let use = jwk["use"], use.stringValue != "sig" {
-            throw LicenseConfigError.invalidPublicKey("its use is not sig")
-        }
-        if let ops = jwk["key_ops"], !(ops.arrayValue ?? []).contains(.string("verify")) {
-            throw LicenseConfigError.invalidPublicKey("its key_ops do not include verify")
-        }
-        if let alg = jwk["alg"], !["EdDSA", "Ed25519"].contains(alg.stringValue ?? "") {
-            throw LicenseConfigError.invalidPublicKey("its alg is not EdDSA")
-        }
-        guard let value = jwk["x"]?.stringValue else { throw LicenseConfigError.invalidPublicKey("no x") }
-        x = value
-    }
-    guard let bytes = base64URLDecode(x), bytes.count == 32 else {
-        throw LicenseConfigError.invalidPublicKey("x is not 32 bytes of base64url")
-    }
-    return bytes
 }
 
 // MARK: - fingerprints

@@ -124,7 +124,7 @@ struct JSONEntryPointTests {
     /// A lease whose payload is `payload`, as written.
     func verified(_ payload: String) throws -> VerifyResult {
         let token = signer.sign(input: base64URLEncode(Data(#"{"alg":"EdDSA","typ":"JWT"}"#.utf8)) + "." + base64URLEncode(Data(payload.utf8)))
-        return verifyLease(token, publicKey: try publicKeyBytes(fromJWK: signer.publicJWK), now: 0)
+        return verifyLease(token, keys: try KeySet(publicJWK: signer.publicJWK), now: 0)
     }
 
     @Test func readsALeasesPayloadAsTheReferenceDoes() throws {

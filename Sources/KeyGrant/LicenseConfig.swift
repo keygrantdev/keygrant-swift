@@ -6,10 +6,13 @@ public struct LicenseConfig: Sendable {
     public var product: String
     /// The KeyGrant API base, e.g. `https://api.keygrant.dev`.
     public var apiBaseURL: URL
-    /// The product's public key, embedded at build time for offline verification: the `publicJwk`
-    /// of `GET https://api.keygrant.dev/v1/products/<product>/pubkey` (public, no API key), as
-    /// JSON (`{"kty":"OKP","crv":"Ed25519","x":"..."}`), or its bare `x`. Fetch it once and ship it
-    /// with the app.
+    /// The product's public keys, embedded at build time for offline verification: its key set, the
+    /// `keys` of `GET https://api.keygrant.dev/v1/products/<product>/pubkey` (public, no API key) as
+    /// `{"keys":[...]}` (or that whole answer, or a JSON list of JWKs): the key that signs its leases,
+    /// and the next one once the product has one staged. One key is a set of one: its JWK
+    /// (`{"kty":"OKP","crv":"Ed25519","x":"..."}`) or its bare `x`. A lease naming its key (`kid`) is
+    /// verified by that key; one naming none by each in turn. Fetch the set when you build and ship
+    /// it with the app.
     public var publicJWK: String
     /// The running app's major version. Set it: the server binds and checks keys by it. Read as
     /// the server reads a version: a 0.x build (0) runs as major 1, and so does anything below it.

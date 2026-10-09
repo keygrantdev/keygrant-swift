@@ -119,15 +119,15 @@ struct OfflineTests {
 
     @Test func takesAnFpClaimOf128UTF16UnitsAndNoLonger() throws {
         let signer = Signer()
-        let key = try publicKeyBytes(fromJWK: signer.publicJWK)
+        let key = try KeySet(publicJWK: signer.publicJWK)
         // 64 characters of two units each: 128 units, the most the claim holds.
         let longest = String(repeating: "😀", count: 64)
         let over = String(repeating: "😀", count: 65)
         #expect(longest.utf16.count == 128 && over.count == 65)
-        #expect(verifyLease(signer.lease(fp: longest), publicKey: key, now: NOW).claims?.fp == longest)
-        #expect(verifyLease(signer.lease(fp: longest), publicKey: key, now: NOW).failure == nil)
-        #expect(verifyLease(signer.lease(fp: over), publicKey: key, now: NOW).failure == .badClaims)
-        #expect(verifyLease(signer.lease(fp: ""), publicKey: key, now: NOW).failure == .badClaims)
+        #expect(verifyLease(signer.lease(fp: longest), keys: key, now: NOW).claims?.fp == longest)
+        #expect(verifyLease(signer.lease(fp: longest), keys: key, now: NOW).failure == nil)
+        #expect(verifyLease(signer.lease(fp: over), keys: key, now: NOW).failure == .badClaims)
+        #expect(verifyLease(signer.lease(fp: ""), keys: key, now: NOW).failure == .badClaims)
     }
 
     @Test func withoutVerdictLeavesOutWhatTheServerSaidAndKeepsWhatTheDeviceKnows() {

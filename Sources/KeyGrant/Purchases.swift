@@ -69,7 +69,10 @@ extension License {
         let timeout = ask.force && !ask.start ? nil : timing.statusCheck
         var response: LicenseHTTPResponse?
         // Nil when it threw or timed out: no answer.
-        if let body { response = try? await post("claim", body.json, timeout: timeout) }
+        if let body, case .object(var sent) = body.json {
+            sent["kids"] = kidsJSON
+            response = try? await post("claim", .object(sent), timeout: timeout)
+        }
         let kind = body?.fingerprintKind
         let judged = await judgeClaim(response, kind: kind, askedAt: askedAt)
         let outcome = claimOutcome(

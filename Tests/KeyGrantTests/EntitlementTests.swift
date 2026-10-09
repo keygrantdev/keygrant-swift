@@ -350,15 +350,15 @@ struct EntitlementsClaimTests {
 
     @Test func readsTheClaimLenientlyInASignedLeaseThatStillVerifies() throws {
         let signer = Signer()
-        let key = try publicKeyBytes(fromJWK: signer.publicJWK)
-        let malformed = verifyLease(signedLease(signer, ["ent": ["edition": "pro", "nested": ["tier": "gold"]]]), publicKey: key, now: NOW)
+        let key = try KeySet(publicJWK: signer.publicJWK)
+        let malformed = verifyLease(signedLease(signer, ["ent": ["edition": "pro", "nested": ["tier": "gold"]]]), keys: key, now: NOW)
         #expect(malformed.failure == nil && malformed.claims?.ent == ["edition": "pro"])
-        let absent = verifyLease(signedLease(signer, [:]), publicKey: key, now: NOW)
+        let absent = verifyLease(signedLease(signer, [:]), keys: key, now: NOW)
         #expect(absent.failure == nil && absent.claims?.ent == [:])
-        let list = verifyLease(signedLease(signer, ["ent": ["pro"]]), publicKey: key, now: NOW)
+        let list = verifyLease(signedLease(signer, ["ent": ["pro"]]), keys: key, now: NOW)
         #expect(list.failure == nil && list.claims?.ent == [:])
         // Only `ent` is read leniently: another optional claim present as null still fails the claims.
-        #expect(verifyLease(signedLease(signer, ["ent": [:], "fp": .null]), publicKey: key, now: NOW).failure == .badClaims)
+        #expect(verifyLease(signedLease(signer, ["ent": [:], "fp": .null]), keys: key, now: NOW).failure == .badClaims)
     }
 }
 

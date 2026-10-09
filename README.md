@@ -24,7 +24,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.2.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.3.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -40,10 +40,10 @@ and add the `KeyGrant` library to the app target.
 import KeyGrant
 import SwiftUI
 
-/// The product's public key: the `publicJwk` of
-/// `GET https://api.keygrant.dev/v1/products/sluice/pubkey`, fetched once and shipped with the
-/// app ("Embedding the public key", below). Public: safe to ship.
-let productKey = #"{"kty":"OKP","crv":"Ed25519","x":"<the x of your product's key>"}"#
+/// The product's public keys: the `keys` of
+/// `GET https://api.keygrant.dev/v1/products/sluice/pubkey`, fetched when you build and shipped
+/// with the app ("Embedding the public keys", below). Public: safe to ship.
+let productKey = #"{"keys":[{"kty":"OKP","crv":"Ed25519","x":"<the x of your product's key>"}]}"#
 
 @MainActor
 final class Licensing: ObservableObject {
@@ -153,7 +153,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 |---|---|---|
 | `product` | | the product slug |
 | `apiBaseURL` | | `https://api.keygrant.dev` |
-| `publicJWK` | | the product's public key: the `publicJwk` of `GET /v1/products/<product>/pubkey`, as JSON, or its bare `x` |
+| `publicJWK` | | the product's public keys: the key set of `GET /v1/products/<product>/pubkey` (`{"keys":[...]}`, or that whole answer), a JSON list of JWKs, or one key, a set of one: its JWK, or its bare `x` ([Embedding the public keys](#embedding-the-public-keys)) |
 | `major` | `1` | the running app's major version, read as the server reads a version: a 0.x build sets `0` and runs as major 1 (as does anything below 1), so a lease for major 1 licenses it |
 | `deviceName` | nil | a label for the device list (cut to 120 UTF-16 units). On a Mac, `SCDynamicStoreCopyComputerName(nil, nil) as String?` gives "Rae's MacBook Pro" without the DNS lookup `Host.current()` makes |
 | `deviceHold` | `true` | below |
@@ -173,6 +173,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 | `.invalid` | `.outdated` | this build is older than the key covers: update the app |
 | `.invalid` | `.device` | the licence was activated on another device: activate again here |
 | `.invalid` | `.tampered` | the lease is not for this licence at all: activate again |
+| `.invalid` | `.unknownKey` | the lease is signed by a key this build does not carry; online, the server renews it with the key it signs with now. When it stays so online: update the app |
 | `.unlicensed` | | nothing held: activate or start a trial |
 | `.unknown` | `.storage` | the licence file could not be read just now: keep running, ask again shortly; never show the activation screen for it |
 
@@ -260,21 +261,32 @@ func customerReturned() async {
   the buyer's own; a leaked one claims nothing, as it carries only a hash of the app's secret. A
   planted pickup shows in the key's history, and you can free the seat for the buyer.
 
-## Embedding the public key
+## Embedding the public keys
 
-The product's public key is the `publicJwk` field of
-`GET https://api.keygrant.dev/v1/products/<product>/pubkey`, which is public and needs no API key.
-(The dashboard shows the key as SPKI and a `.pem`, neither of which this SDK takes.) Fetch it
-once and ship it with the app:
+The product's public keys are the `keys` of
+`GET https://api.keygrant.dev/v1/products/<product>/pubkey`, which is public and needs no API key,
+and the dashboard's Signing key tab copies the same set (Copy key set). Fetch them when you build
+and ship them with the app:
 
 ```sh
-curl -s https://api.keygrant.dev/v1/products/sluice/pubkey | jq -c .publicJwk
-# {"kty":"OKP","crv":"Ed25519","x":"..."}
+curl -s https://api.keygrant.dev/v1/products/sluice/pubkey | jq -c '{keys}'
+# {"keys":[{"kty":"OKP","crv":"Ed25519","x":"...","kid":"..."}]}
 ```
 
-Embed it as a string (a raw string literal, as in the quick start), or ship it as a bundled
-resource and read it at launch. Either the whole JWK or its bare `x` works. It is public: anyone
-may see it. A JWK that holds the PRIVATE key (`d`) is refused at once: never ship that.
+Embed the set as a string (a raw string literal, as in the quick start), or ship it as a bundled
+resource and read it at launch. One key alone, its JWK or its bare `x`, still works: a set of one.
+They are public: anyone may see them. A JWK that holds the PRIVATE key (`d`) is refused at once:
+never ship that.
+
+**Why a set.** A lease names the key that signed it (`kid` in its header, the key's RFC 7638
+thumbprint, which the SDK computes from the key itself). It is verified by that key; a lease that
+names none (every lease signed before key sets) by each key in turn; and one naming a key the build
+does not carry is refused (`.unknownKey`). When the product rotates its signing key, it first
+*stages* the next key, published beside the current one while every lease is still signed with the
+current key. Ship builds carrying both; once they are out, the product *switches*, and those builds
+verify every lease signed after it. Embed the whole set each time you build. Each activation,
+validate and claim reports the ids of the keys the build carries (`kids`), so the dashboard can
+count the devices still on builds without the staged key before you switch.
 
 `License(_:)` checks the key at once and throws `LicenseConfigError` for one it cannot use. Read
 from a resource, the key can be wrong in a shipped build (a stale or missing file), so handle the
@@ -316,7 +328,7 @@ that wants nothing to do with them checks it.
 
 ## Entitlements
 
-A licence can grant more than the base product: an edition, a number of seats, a feature. Its
+A licence can grant more than the base product: an edition, a number of seats, an add-on. Its
 lease signs them (the `ent` claim), and the status that rests on the lease hands them to the app
 as `entitlements`, read offline like everything else on the lease:
 
@@ -345,6 +357,21 @@ let seats = status.entitlements["seats"]?.numberValue ?? 1
 - **A malformed claim never costs the licence:** a member that is not a flag, a number or a text
   is left out, and an `ent` that is not an object at all reads as none. The SDK enforces none of
   the caps the server holds entitlements to (how many, how long): the signature is what it trusts.
+
+To ask whether the licence grants an entitlement, name its code:
+
+```swift
+if await license.has("cloud_sync") { enableCloudSync() }
+try await license.require("export") // throws MissingEntitlement(entitlement: "export")
+```
+
+`has(_:)` is true for a flag that is on, a number that is not zero, or a text that is not empty;
+false for anything else, and for a code the lease does not grant (a dictionary key, so compared by
+canonical equivalence, as above). It is answered offline from the stored lease only, as `status()`
+would answer from what is stored, with no request and no write: a licence that does not license
+this build, or none at all, grants nothing; a running trial grants what its trial lease does.
+`require(_:)` throws `MissingEntitlement`, naming the code, when `has(_:)` would be false.
+`grants(status.entitlements, code)` answers the same of a status already in hand.
 
 ## Where the state is kept
 

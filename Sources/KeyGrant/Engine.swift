@@ -26,7 +26,7 @@ extension License {
     }
 
     func verify(_ lease: String, now: Int) -> VerifyResult {
-        verifyLease(lease, publicKey: publicKey, now: now)
+        verifyLease(lease, keys: keys, now: now)
     }
 
     /// A licence lease verified offline and held to this product and build, and to the key and
@@ -181,8 +181,14 @@ extension License {
         if let kept = state.keptMajor { body["keptMajor"] = .number(Double(kept)) }
         if device.canTell { body["fingerprints"] = .array(device.fingerprints.map(LicenseJSON.string)) }
         if device.canTell, let kind = device.kind { body["fingerprintKind"] = .string(kind.rawValue) }
+        body["kids"] = kidsJSON
         return .object(body)
     }
+
+    /// The ids of the keys this build carries (`kid`, each key's thumbprint), in the order
+    /// configured: sent with each activation, validate and claim, so the product's dashboard can
+    /// count the devices whose builds do not carry a key yet.
+    var kidsJSON: LicenseJSON { .array(keys.kids.map(LicenseJSON.string)) }
 }
 
 /// What a path segment may hold as it is: RFC 3986's unreserved characters.
@@ -208,6 +214,7 @@ extension LicenseReason {
         case .upgrade: self = .upgrade
         case .outdated: self = .outdated
         case .tampered: self = .tampered
+        case .unknownKey: self = .unknownKey
         case .device: self = .device
         }
     }

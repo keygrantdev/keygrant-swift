@@ -31,6 +31,7 @@ enum LeaseCheck: Sendable, Hashable {
 
     enum Reason: String, Sendable, Hashable {
         case expired, upgrade, outdated, tampered, device
+        case unknownKey = "unknown-key"
     }
 }
 
@@ -69,7 +70,11 @@ func sameKey(_ a: String, _ b: String) -> Bool {
 /// `minMajor` (absent: 1) is `outdated`, one above `major` `upgrade`.
 func checkLease(_ verified: VerifyResult, product: String, major: Int, holder: LeaseHolder) -> LeaseCheck {
     guard case .valid(let claims) = verified else {
-        return .refused(verified.failure == .expired ? .expired : .tampered)
+        switch verified.failure {
+        case .expired?: return .refused(.expired)
+        case .unknownKey?: return .refused(.unknownKey)
+        default: return .refused(.tampered)
+        }
     }
     if !sameText(claims.product, product) { return .refused(.tampered) }
     if !sameKey(claims.sub, holder.key) || !sameText(claims.aid, holder.activationId) { return .refused(.tampered) }
@@ -87,8 +92,8 @@ func checkLease(_ verified: VerifyResult, product: String, major: Int, holder: L
 /// The status a stored licence lease gives, judged offline (`checkLease`), when the server gives no
 /// verdict on it: licensed, with the check's test flag (its one source) and the lease's
 /// entitlements (empty when it grants none); `.expired`/`.offline` once it has run out; `.invalid`
-/// with the reason, and the key, when it is not for this build or this device;
-/// `.invalid`/`.tampered`, with no key, when it is not this licence's at all. Only a lease that
+/// with the reason, and the key, when it is not for this build or this device, or is signed by a
+/// key the build does not carry (`.unknownKey`); `.invalid`/`.tampered`, with no key, when it is not this licence's at all. Only a lease that
 /// licenses carries entitlements. Test licences verify like any other (they are signed with the
 /// product's real key); the flag is how an app tells them apart.
 func leaseStatus(_ check: LeaseCheck, key: String?) -> LicenseStatus {

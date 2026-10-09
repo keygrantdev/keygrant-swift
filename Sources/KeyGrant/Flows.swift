@@ -35,6 +35,7 @@ extension License {
         ]
         if let kind = identity.kind { body["fingerprintKind"] = .string(kind.rawValue) }
         if let deviceName { body["name"] = .string(deviceName) }
+        body["kids"] = kidsJSON
         let response: LicenseHTTPResponse
         do {
             response = try await post("activate", .object(body))

@@ -27,8 +27,8 @@ struct PickupSaveTests {
     /// own with its payload tampered, each refused by its signature.
     func forged(_ h: Harness) throws -> [String] {
         let leases = [Signer().lease(sub: Purchase.boughtKey), try tampered(h.signer.lease(sub: Purchase.boughtKey))]
-        let key = try publicKeyBytes(fromJWK: h.signer.publicJWK)
-        for lease in leases { #expect(verifyLease(lease, publicKey: key, now: NOW).failure == .badSignature) }
+        let key = try KeySet(publicJWK: h.signer.publicJWK)
+        for lease in leases { #expect(verifyLease(lease, keys: key, now: NOW).failure == .badSignature) }
         return leases
     }
 

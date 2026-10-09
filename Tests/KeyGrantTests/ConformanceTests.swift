@@ -30,8 +30,8 @@ struct ConformanceTests {
         let groups = (file.objectValue ?? [:]).filter { $0.value.arrayValue != nil && $0.key != "conventions" }
         // Every group in the file has a test below; a new group fails here until it does.
         #expect(Set(groups.keys) == Self.answered)
-        let key = try publicKeyBytes(fromJWK: try #require(file["publicJwk"]).jsonText)
-        #expect(key.count == 32)
+        let key = try KeySet(publicJWK: try #require(file["publicJwk"]).jsonText)
+        #expect(key.keys.count == 1 && key.keys[0].key.count == 32)
         // What the README says this suite replays: every vector but the Windows reads of the
         // machine id (`machineIds`), which this SDK, with no Windows reader, does not make, and
         // the majors with a fraction, which `LicenseConfig.major` (an `Int`) cannot hold (`majors`).
@@ -40,8 +40,8 @@ struct ConformanceTests {
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 43 && total == 716 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions == 703)
+        #expect(groups.count == 46 && total == 797 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions == 784)
     }
 
     static let answered: Set<String> = [
@@ -53,6 +53,8 @@ struct ConformanceTests {
         // Added with the purchase from the trial (ConformancePurchaseTests.swift).
         "majors", "purchaseUrls", "purchaseTokenKept", "claimDue", "parseClaimBody", "claimOutcomes", "trialReportDue",
         "purchaseReferences", "claimBodies",
+        // Added with key sets and the entitlement helpers (ConformanceKeyTests.swift).
+        "keyIds", "keySets", "grants",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the
@@ -108,7 +110,7 @@ struct ConformanceTests {
 
     @Test func leases() throws {
         let file = try #require(Self.file)
-        let key = try publicKeyBytes(fromJWK: try #require(file["publicJwk"]).jsonText)
+        let key = try KeySet(publicJWK: try #require(file["publicJwk"]).jsonText)
         let vectors = try group("leases")
         for vector in vectors {
             let name = vector.name
@@ -118,7 +120,7 @@ struct ConformanceTests {
                 claims: try #require(vector["holder"]?["claims"]?.arrayValue).compactMap(\.stringValue),
                 canTell: try vector.bool("holder", "canTell")
             )
-            let verified = verifyLease(try vector.string("token"), publicKey: key, now: try vector.int("now"))
+            let verified = verifyLease(try vector.string("token"), keys: key, now: try vector.int("now"))
             // The claims as parsed, `ent` read leniently: its flag, number and text members only.
             #expect(verified.json == vector["verify"], "\(name): verify")
             let check = checkLease(verified, product: try vector.string("product"), major: try vector.int("major"), holder: holder)
@@ -126,13 +128,13 @@ struct ConformanceTests {
         }
         // Every verdict the offline check can give is pinned.
         let verdicts = Set(vectors.compactMap { $0["expect"]?["reason"]?.stringValue ?? ($0["expect"]?["ok"]?.boolValue == true ? "ok" : nil) })
-        #expect(verdicts == ["device", "expired", "ok", "outdated", "tampered", "upgrade"])
+        #expect(verdicts == ["device", "expired", "ok", "outdated", "tampered", "unknown-key", "upgrade"])
     }
 
     @Test func trials() throws {
-        let key = try publicKeyBytes(fromJWK: try #require(Self.file?["publicJwk"]).jsonText)
+        let key = try KeySet(publicJWK: try #require(Self.file?["publicJwk"]).jsonText)
         for vector in try group("trials") {
-            let verified = verifyLease(try vector.string("token"), publicKey: key, now: try vector.int("now"))
+            let verified = verifyLease(try vector.string("token"), keys: key, now: try vector.int("now"))
             let valid = trialLeaseValid(
                 verified,
                 product: try vector.string("product"),
@@ -355,13 +357,13 @@ struct ConformanceTests {
             )
             #expect(renewalOutcome(input).json == vector["expect"], "\(vector.name)")
         }
-        #expect(vectors.count == 118)
+        #expect(vectors.count == 121)
     }
 
     /// The status a stored licence lease gives with no verdict from the server (`leaseStatus` of
     /// `checkLease`, which `status()` and a renewal answer with), entitlements included.
     @Test func leaseStatuses() throws {
-        let key = try publicKeyBytes(fromJWK: try #require(Self.file?["publicJwk"]).jsonText)
+        let key = try KeySet(publicJWK: try #require(Self.file?["publicJwk"]).jsonText)
         for vector in try group("leaseStatuses") {
             let holder = LeaseHolder(
                 key: try vector.string("holder", "key"),
@@ -369,7 +371,7 @@ struct ConformanceTests {
                 claims: try #require(vector["holder"]?["claims"]?.arrayValue).compactMap(\.stringValue),
                 canTell: try vector.bool("holder", "canTell")
             )
-            let verified = verifyLease(try vector.string("token"), publicKey: key, now: try vector.int("now"))
+            let verified = verifyLease(try vector.string("token"), keys: key, now: try vector.int("now"))
             let check = checkLease(verified, product: try vector.string("product"), major: try vector.int("major"), holder: holder)
             #expect(leaseStatus(check, key: holder.key).json == vector["expect"], "\(vector.name)")
         }
@@ -379,12 +381,12 @@ struct ConformanceTests {
     /// which a trial's `status()` and `startTrial()` answer with), entitlements included: the
     /// stored state is the trial start and the trial lease, and nothing else.
     @Test func trialLeaseStatuses() throws {
-        let key = try publicKeyBytes(fromJWK: try #require(Self.file?["publicJwk"]).jsonText)
+        let key = try KeySet(publicJWK: try #require(Self.file?["publicJwk"]).jsonText)
         for vector in try group("trialLeaseStatuses") {
             let token = try vector.string("token")
             let now = try vector.int("now")
             let lease = trialLeaseOf(
-                verifyLease(token, publicKey: key, now: now),
+                verifyLease(token, keys: key, now: now),
                 product: try vector.string("product"),
                 claims: try #require(vector["device"]?["claims"]?.arrayValue).compactMap(\.stringValue),
                 canTell: try vector.bool("device", "canTell")

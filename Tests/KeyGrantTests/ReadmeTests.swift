@@ -44,7 +44,7 @@ struct ReadmeTests {
         #expect(!quickStart.code.contains("try!"))
         let forced = blocks.filter { $0.code.contains("try!") }
         #expect(forced.count == 1)
-        #expect(forced.first?.heading == "## Embedding the public key")
+        #expect(forced.first?.heading == "## Embedding the public keys")
         #expect(forced.first?.code.contains("literal in the source") == true)
     }
 
@@ -69,10 +69,10 @@ struct ReadmeTests {
             }
             return (license, configError)
         }
-        let working = setUp(Signer().publicJWK)
+        let working = setUp(#"{"keys":["# + Signer().publicJWK + "]}")
         #expect(working.license != nil && working.configError == nil)
         // The placeholder the README shows is not a key: the error says so.
-        let placeholder = setUp(#"{"kty":"OKP","crv":"Ed25519","x":"<the x of your product's key>"}"#)
+        let placeholder = setUp(#"{"keys":[{"kty":"OKP","crv":"Ed25519","x":"<the x of your product's key>"}]}"#)
         #expect(placeholder.license == nil)
         #expect(placeholder.configError == .invalidPublicKey("x is not 32 bytes of base64url"))
     }

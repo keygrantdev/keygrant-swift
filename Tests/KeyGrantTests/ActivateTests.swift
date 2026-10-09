@@ -29,7 +29,7 @@ struct ActivateTests {
         h.http.on("activate", status: 200, json: ["lease": .string(h.signer.lease(major: 3)), "activationId": "act_1"])
         #expect(await h.license.activate(KEY) == .activated)
         let body = try #require(h.http.body("activate"))
-        #expect(body == ["key": .string(KEY), "fingerprint": "fp-test", "name": "Rae’s MacBook", "major": 3])
+        #expect(body == ["key": .string(KEY), "fingerprint": "fp-test", "name": "Rae’s MacBook", "major": 3, "kids": [.string(h.signer.kid)]])
     }
 
     @Test func refusesAKeyLongerThanTheServerHoldsCountingUTF16Units() async throws {

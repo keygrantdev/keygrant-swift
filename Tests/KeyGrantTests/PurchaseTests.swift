@@ -197,6 +197,7 @@ struct PickupTests {
         // The secret, the fingerprint, and every fingerprint the device answers to, as a validate sends them.
         let body: LicenseJSON = [
             "token": .string(Purchase.token), "fingerprint": "fp-test", "fingerprints": ["fp-test"], "name": "Rae's laptop", "major": 1,
+            "kids": [.string(h.signer.kid)],
         ]
         #expect(h.http.body("claim") == body)
         let stored = try #require(h.stored)
@@ -216,7 +217,7 @@ struct PickupTests {
         _ = await held.license.status()
         let body: LicenseJSON = [
             "token": .string(Purchase.token), "fingerprint": "fp-machine", "fingerprintKind": "machine",
-            "fingerprints": ["fp-machine", "fp-host"], "major": 1,
+            "fingerprints": ["fp-machine", "fp-host"], "major": 1, "kids": [.string(held.signer.kid)],
         ]
         // No device name configured: none sent.
         #expect(held.http.body("claim") == body)

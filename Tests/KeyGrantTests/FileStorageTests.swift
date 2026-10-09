@@ -106,8 +106,9 @@ struct FileStorageWriteTests {
             try make("sluice.json.2.2.inflight.tmp", #"{"key":"IN"#)
             // Another product's temp in the same folder is not this file's to clear.
             try make("maindeck.json.3.3.other.tmp", "{}", ageMs: 2 * staleTempMs)
-            try make("sluice.json.4.4.younger.tmp", "{}", ageMs: staleTempMs - 5_000)
-            try make("sluice.json.5.5.older.tmp", "{}", ageMs: staleTempMs + 5_000)
+            // Half the limit either side of it: a machine that stalls before the write still finds the younger young.
+            try make("sluice.json.4.4.younger.tmp", "{}", ageMs: staleTempMs / 2)
+            try make("sluice.json.5.5.older.tmp", "{}", ageMs: staleTempMs * 3 / 2)
             try await FileStorage(path: "\(dir)/sluice.json").write(StoredState(key: "K"))
             #expect(names(dir) == ["maindeck.json.3.3.other.tmp", "sluice.json", "sluice.json.2.2.inflight.tmp", "sluice.json.4.4.younger.tmp"])
         }

@@ -36,6 +36,9 @@ public enum LicenseReason: String, Sendable, Hashable, CaseIterable {
     case trial
     /// The licence file could not be read just now (state `.unknown`).
     case storage
+    /// The lease is signed by a key this build does not carry (`LicenseConfig.publicJWK`). Asked
+    /// online, the server signs one with the key it uses now, which a build carrying that key verifies.
+    case unknownKey = "unknown-key"
 }
 
 /// What `status()`, `refresh()` and `startTrial()` answer.
@@ -281,10 +284,34 @@ public struct InvalidPaymentLink: Error, Sendable, Hashable, CustomStringConvert
     public var description: String { "the payment link is not an absolute URL: \(link)" }
 }
 
+/// What `License.require(_:)` throws when the licence does not grant an entitlement: names it.
+public struct MissingEntitlement: Error, Sendable, Hashable, CustomStringConvertible {
+    /// The entitlement's code, as the app asked for it.
+    public let entitlement: String
+
+    public init(entitlement: String) {
+        self.entitlement = entitlement
+    }
+
+    public var description: String { "the licence does not grant \"\(entitlement)\"" }
+}
+
+/// Whether entitlements grant `code`: a flag that is on, a number that is not zero, or a text that
+/// is not empty. Absent, off, zero or empty is not granted. The code is matched exactly, case
+/// included (as Swift compares strings: by their canonical form).
+public func grants(_ entitlements: [String: Entitlement], _ code: String) -> Bool {
+    switch entitlements[code] {
+    case .bool(let flag)?: flag
+    case .number(let number)?: number != 0
+    case .string(let text)?: !text.isEmpty
+    case nil: false
+    }
+}
+
 /// A `LicenseConfig` the SDK cannot work with.
 public enum LicenseConfigError: Error, Sendable, Hashable, CustomStringConvertible {
-    /// `publicJWK` is not an Ed25519 public key (a JWK `{"kty":"OKP","crv":"Ed25519","x":"..."}`,
-    /// or its bare `x`).
+    /// `publicJWK` is not the product's Ed25519 public keys (a JWK set `{"keys":[...]}`, a list of
+    /// JWKs, one JWK `{"kty":"OKP","crv":"Ed25519","x":"..."}`, or its bare `x`).
     case invalidPublicKey(String)
 
     public var description: String {
