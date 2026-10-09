@@ -23,7 +23,7 @@ struct HeldLeaseTests {
         #expect(h.http.count("validate") == 0)
     }
 
-    @Test func takesALeaseSignedBeforeTheDeviceClaim() async throws {
+    @Test func takesALeaseWithNoDeviceClaim() async throws {
         let h = try Harness()
         h.storage.set(StoredState(key: KEY, activationId: "act_1", lease: lease(h, device: nil), lastSeen: NOW, checkedMajor: 1))
         h.http.setFail(true)
@@ -64,7 +64,7 @@ struct HeldLeaseTests {
         #expect(await h.license.refresh() == device)
     }
 
-    @Test func saysDeviceOfflineTooOnceALeaseFromBeforeTheClaimIsRenewedWithAnotherDevices() async throws {
+    @Test func saysDeviceOfflineTooOnceALeaseWithNoDeviceClaimIsRenewedWithAnotherDevices() async throws {
         let h = try Harness()
         h.storage.set(StoredState(key: KEY, activationId: "act_1", lease: lease(h, device: nil), lastSeen: NOW, checkedMajor: 1))
         h.http.on("validate", status: 200, json: ["lease": .string(lease(h, device: "fp-another-machine")), "activationId": "act_1"])
@@ -145,7 +145,7 @@ struct DeviceIdentityTests {
         #expect(!h.http.called("activate"))
     }
 
-    @Test func takesALeaseActivatedUnderTheHostNameBeforeTheMachineIdAndRenewsIt() async throws {
+    @Test func takesALeaseActivatedUnderTheHostNameAndRenewsIt() async throws {
         let h = try Harness(fingerprinter: DefaultFingerprinter(source: mac(.value(UUID_))))
         let legacy = lease(h, HOST, kind: .hostname)
         licensed(h, legacy)

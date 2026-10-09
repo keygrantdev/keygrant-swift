@@ -1,7 +1,7 @@
 import Foundation
 
-/// The operating system's own id for this machine, which the default fingerprinter hashes (the
-/// reference's `machine-id.ts`). It survives renaming the computer, which the host name does not.
+/// The operating system's own id for this machine, which the default fingerprinter hashes. It
+/// survives renaming the computer, which the host name does not.
 ///
 ///  - macOS: `IOPlatformUUID` of the platform expert device, read in-process through IOKit (the
 ///    value `/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice` prints, which a sandboxed app could
@@ -23,7 +23,7 @@ enum MachineIdReading: Sendable, Hashable {
 
 /// Where the machine id is read from: the real system, or a stand-in in tests.
 protocol MachineIdSource: Sendable {
-    /// Node's name for the platform: `darwin`, `linux`, …
+    /// Node's name for the platform: `darwin`, `linux`, ...
     var platform: String { get }
     /// macOS: the platform expert's `IOPlatformUUID`, or nil when there is none.
     func platformUUID() async throws -> String?

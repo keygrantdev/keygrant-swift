@@ -1,7 +1,7 @@
 import Foundation
 
-/// The machinery under `License` (the reference's `engine.ts`): every request bounded, the stored
-/// state and its clock guard, and the online validate with what its answer does to the stored state.
+/// The machinery under `License`: every request bounded, the stored state and its clock guard, and
+/// the online validate with what its answer does to the stored state.
 extension License {
     /// The device clock, kept within what a JavaScript number holds exactly, so no sum on it overflows.
     func clockNow() -> Int {
@@ -151,15 +151,24 @@ extension License {
         guard let response, response.status == 200, let lease = nonEmpty(parseLeaseBody(response.json).lease) else {
             return (nil, effectiveNow(state))
         }
+        let holder = LeaseOwner(key: state.key ?? "", activationId: state.activationId ?? "", deviceKind: state.deviceKind)
+        let judged = await judged(lease, for: holder, fallbackNow: effectiveNow(state))
+        return (judged.check, judged.now)
+    }
+
+    /// A lease the server just answered, checked for `owner` on this device (`evaluate`) as of the
+    /// server's time (`serverNow`, the clock guard brought back best-effort: `fallbackNow` when
+    /// the state cannot be read just now). With the time it was judged at.
+    func judged(_ lease: String, for owner: LeaseOwner, fallbackNow: Int) async -> (check: LeaseCheck, now: Int) {
         let now: Int
         do {
-            now = try await serverNow(lease, key: state.key ?? "", activationId: state.activationId ?? "") { patch, guardTime in
+            now = try await serverNow(lease, key: owner.key, activationId: owner.activationId) { patch, guardTime in
                 _ = await self.saveBestEffort(patch, guardTime: guardTime)
             }
         } catch {
-            now = effectiveNow(state)
+            now = fallbackNow
         }
-        let check = await evaluate(lease, now: now, key: state.key, activationId: state.activationId, deviceKind: state.deviceKind)
+        let check = await evaluate(lease, now: now, key: owner.key, activationId: owner.activationId, deviceKind: owner.deviceKind)
         return (check, now)
     }
 
@@ -183,6 +192,14 @@ private let pathSegmentCharacters = CharacterSet(
 
 /// The API base and product do not make a URL.
 private struct InvalidEndpoint: Error {}
+
+/// Whose a lease the server just answered is meant to be (`judged`): the key and activation it
+/// came for, and what the install is keyed by (none for a fingerprint of unknown kind).
+struct LeaseOwner: Sendable, Hashable {
+    var key: String
+    var activationId: String
+    var deviceKind: DeviceKind?
+}
 
 extension LicenseReason {
     init(_ reason: LeaseCheck.Reason) {

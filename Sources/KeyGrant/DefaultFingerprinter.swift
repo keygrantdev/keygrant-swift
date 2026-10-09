@@ -125,9 +125,9 @@ public func machineFingerprint(_ id: String) -> String {
 /// What is hashed when not even the host name can be read.
 let unknownHost = "unknown-host"
 
-/// The fingerprint the SDKs gave before the machine id: the host name, platform and architecture
-/// (with Node's names, so a machine has one whichever SDK reads it), hashed. Still offered as an
-/// alternate, and the fingerprint when the machine has no id to read.
+/// The host-name fingerprint: the host name, platform and architecture (with Node's names, so a
+/// machine has one whichever SDK reads it), hashed. The fingerprint when the machine has no id to
+/// read, and offered as an alternate beside the machine id's.
 public func hostnameFingerprint() -> String {
     hostNamesFingerprint(hostNames())
 }
@@ -175,7 +175,7 @@ let nodePlatform = nodePlatformName(swiftOS: swiftOS)
 /// Node's `os.arch()` for this process (the process's architecture, as Node's is).
 let nodeArch = nodeArchName(swiftArch: swiftArch)
 
-/// Node's `os.platform()` name for an operating system as Swift's `#if os(…)` names it; one
+/// Node's `os.platform()` name for an operating system as Swift's `#if os(...)` names it; one
 /// Node has no name for, lower-cased.
 func nodePlatformName(swiftOS os: String) -> String {
     switch os {
@@ -189,7 +189,7 @@ func nodePlatformName(swiftOS os: String) -> String {
     }
 }
 
-/// Node's `os.arch()` name for an architecture as Swift's `#if arch(…)` names it; one Node has no
+/// Node's `os.arch()` name for an architecture as Swift's `#if arch(...)` names it; one Node has no
 /// name for, as Swift names it.
 func nodeArchName(swiftArch arch: String) -> String {
     switch arch {
@@ -205,7 +205,7 @@ func nodeArchName(swiftArch arch: String) -> String {
     }
 }
 
-/// The operating system this was built for, as `#if os(…)` names it.
+/// The operating system this was built for, as `#if os(...)` names it.
 let swiftOS: String = {
     #if os(macOS)
     return "macOS"
@@ -234,7 +234,7 @@ let swiftOS: String = {
     #endif
 }()
 
-/// The architecture this was built for, as `#if arch(…)` names it.
+/// The architecture this was built for, as `#if arch(...)` names it.
 let swiftArch: String = {
     #if arch(x86_64)
     return "x86_64"

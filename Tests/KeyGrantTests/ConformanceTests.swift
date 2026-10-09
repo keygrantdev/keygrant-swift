@@ -4,8 +4,7 @@ import Testing
 @testable import KeyGrant
 
 /// `conformance/vectors.json`: what every KeyGrant SDK must answer, generated from the reference.
-/// Each group is answered here from its vectors' own JSON, as `sdk/conformance/replay.ts` answers
-/// it, and every answer must equal the file's.
+/// Each group is answered here from its vectors' own JSON, and every answer must equal the file's.
 @Suite("Conformance vectors", suiteTimeLimit)
 struct ConformanceTests {
     static let file: LicenseJSON? = {
@@ -34,11 +33,15 @@ struct ConformanceTests {
         let key = try publicKeyBytes(fromJWK: try #require(file["publicJwk"]).jsonText)
         #expect(key.count == 32)
         // What the README says this suite replays: every vector but the Windows reads of the
-        // machine id (`machineIds`), which this SDK, with no Windows reader, does not make.
+        // machine id (`machineIds`), which this SDK, with no Windows reader, does not make, and
+        // the majors with a fraction, which `LicenseConfig.major` (an `Int`) cannot hold (`majors`).
         let total = groups.values.reduce(0) { $0 + ($1.arrayValue?.count ?? 0) }
         let windows = try group("machineIds").filter { $0["source"]?["platform"] == "win32" }.count
-        #expect(groups.count == 34 && total == 583 && windows == 9)
-        #expect(total - windows == 574)
+        let fractions = try group("majors").filter { vector in
+            (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
+        }.count
+        #expect(groups.count == 43 && total == 716 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions == 703)
     }
 
     static let answered: Set<String> = [
@@ -47,6 +50,9 @@ struct ConformanceTests {
         "guardedNow", "clockCorrections", "mapServerError", "refusalOf", "enteredKey", "trimDeviceName", "noAnswer",
         "parseLeaseBody", "parseTrialBody", "mountinfo", "machineIds", "renewals", "validLeaseAsks", "devices",
         "identities", "savedLastSeen", "leaseStatuses", "trialLeaseStatuses", "entitlementNumbers",
+        // Added with the purchase from the trial (ConformancePurchaseTests.swift).
+        "majors", "purchaseUrls", "purchaseTokenKept", "claimDue", "parseClaimBody", "claimOutcomes", "trialReportDue",
+        "purchaseReferences", "claimBodies",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the
@@ -89,6 +95,13 @@ struct ConformanceTests {
             "STALE_TEMP_MS": .number(staleTempMs),
             "UPDATE_ATTEMPTS": .number(Double(updateAttempts)),
             "UNKNOWN_HOST": .string(unknownHost),
+            "CLAIM_WAIT_MS": .number(Double(Waits.claimWaitMs)),
+            "PURCHASE_TOKEN_MS": .number(Double(Waits.purchaseTokenMs)),
+            "TRIAL_REPORT_MS": .number(Double(Waits.trialReportMs)),
+            "PURCHASE_REFERENCE_PREFIX": .string(purchaseReferencePrefix),
+            "CLAIM_EAGER_MS": .number(Double(Waits.claimEagerMs)),
+            "MAX_CLAIM_FINGERPRINTS": .number(Double(maxClaimFingerprints)),
+            "MAX_CLAIM_FINGERPRINT_LENGTH": .number(Double(maxClaimFingerprintLength)),
         ]
         #expect(constants == .object(ours))
     }
@@ -206,8 +219,9 @@ struct ConformanceTests {
             let patch = refusalPatch(refused, major: try vector.int("major"), ownClaim: vector["device"]?["ownClaim"]?.stringValue)
             #expect(patch.json == vector["expect"], "\(vector.name)")
         }
+        let named = ["LEASED": leased, "UNKEYED": unkeyed, "NO_PURCHASE": noPurchase]
         for vector in try group("leasePatches") {
-            let patch = try vector.string("patch") == "LEASED" ? leased : unkeyed
+            let patch = try #require(named[try vector.string("patch")], "\(vector.name)")
             #expect(patch.json == vector["expect"], "\(vector.name)")
         }
         for vector in try group("keyedBy") {
@@ -485,13 +499,13 @@ struct ConformanceTests {
 
 // MARK: - reading vectors
 
-/// A double's IEEE-754 bits, sign first, as 16 lowercase hex digits (`replay.ts` `doubleBits`).
+/// A double's IEEE-754 bits, sign first, as 16 lowercase hex digits.
 func doubleBits(_ value: Double) -> String {
     let hex = String(value.bitPattern, radix: 16)
     return String(repeating: "0", count: 16 - hex.count) + hex
 }
 
-/// What the decisions read of a lease's claims (`replay.ts` `BASE_CLAIMS`).
+/// What the decisions read of a lease's claims (the vectors' base claims).
 let baseClaims = LeaseClaims(
     sub: KEY, product: PRODUCT, aid: "act_1", model: "perpetual", lim: 3, major: 3, iat: 1_789_913_600, exp: 1_792_505_600
 )
@@ -583,8 +597,8 @@ extension DeviceIdentity {
     }
 }
 
-/// A device as the decisions that take one read it (`replay.ts` `deviceOf`): its own fingerprint
-/// (none when it cannot tell), what that hashes, and its own claim.
+/// A device as the decisions that take one read it: its own fingerprint (none when it cannot tell),
+/// what that hashes, and its own claim.
 func deviceOf(kind: DeviceKind?, ownClaim: String?, canTell: Bool = true, claims: [String]? = nil) -> Device {
     Device(
         own: canTell ? "fingerprint-own" : nil,
@@ -657,6 +671,10 @@ extension Basis {
             guard let at = trial["at"]?.intValue else { throw VectorError(description: "a trial ask with no at") }
             self.trial = Stamp(at: at, seen: trial["seen"]?.intValue)
         }
+        if let purchase = json["purchase"], !purchase.isNull {
+            guard let token = purchase["token"]?.stringValue else { throw VectorError(description: "a purchase with no token") }
+            self.purchase = PurchaseBasis(token: token, at: purchase["at"]?.intValue)
+        }
     }
 }
 
@@ -698,7 +716,7 @@ func macSource(_ script: LicenseJSON) throws -> ScriptedMachineSource {
     return mac(.value(platformUUID(inIoreg: ioreg["output"]?.stringValue ?? "")))
 }
 
-/// The value of `"IOPlatformUUID" = "…"` in `ioreg` output.
+/// The value of `"IOPlatformUUID" = "..."` in `ioreg` output.
 func platformUUID(inIoreg output: String) -> String? {
     guard let label = output.range(of: "\"IOPlatformUUID\"") else { return nil }
     let rest = output[label.upperBound...].drop { $0 == " " || $0 == "\t" }

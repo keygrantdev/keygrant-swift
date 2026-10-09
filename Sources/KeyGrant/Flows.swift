@@ -1,7 +1,6 @@
 import Foundation
 
-/// What each public call does (the reference's `license.ts` internals): when to go online, and
-/// what to answer.
+/// What each public call does: when to go online, and what to answer.
 extension License {
     /// The stored state for a status, with a trial this process could not save; nil when it
     /// cannot be read just now (`.unknown`/`.storage`).
@@ -52,17 +51,13 @@ extension License {
         }
         let evaluated = await evaluate(lease, now: now, key: entered, activationId: activationId, deviceKind: identity.kind)
         guard case .ok(_, let claims) = evaluated else { return .failed(.invalidLease) }
-        let patch: StatePatch = [
-            .key: .string(entered),
-            .activationId: .string(activationId),
-            .lease: .string(lease),
-            .checkedMajor: .int(major),
-            .keptMajor: .int(orClear: keptWith(nil, claims: claims, now: now, major: major)),
-        ]
-        // What this activation keyed the install by; none for a fingerprint of unknown kind.
-        let kind: StatePatch = [.deviceKind: .deviceKind(orClear: identity.kind)]
+        // As a bought key's pickup saves one (`activationPatch`), the purchase secret cleared too:
+        // else a later deactivate would let a pending pickup activate the device again.
+        let patch = activationPatch(
+            Activation(key: entered, activationId: activationId, lease: lease, claims: claims, now: now, major: major, kind: identity.kind)
+        )
         let activation = Asked(at: askedAt, activationId: activationId, seen: stored.verdictAt)
-        try await save(patch + leased + kind, basis: Basis(activation: activation))
+        try await save(patch, basis: Basis(activation: activation))
         return .activated
     }
 
@@ -80,8 +75,9 @@ extension License {
                 released = false
             }
         }
-        // Stamped, so that an answer to an older ask is not saved over it.
-        try await save(unkeyed + [.verdictAt: .int(effectiveNow(state))])
+        // Stamped, so that an answer to an older ask is not saved over it. The purchase secret goes
+        // too: a key the customer may have meant for another machine is never picked up here.
+        try await save(unkeyed + noPurchase + [.verdictAt: .int(effectiveNow(state))])
         return DeactivateResult(released: released)
     }
 
@@ -114,25 +110,35 @@ extension License {
         if nonEmpty(state.key) != nil, let lease = nonEmpty(state.lease) {
             return await licenseStatus(state, lease: lease, now: now, force: force, readOnly: readOnly)
         }
-        if state.trialStart != nil { return await trialStatus(state, now: now, ask: TrialAsk(force: force, readOnly: readOnly)) }
+        // No licence held: a key bought through `purchaseURL` is picked up first, never read-only.
+        var held = state
+        if !readOnly {
+            switch await pickUp(state, ask: PickupAsk(start: false, force: force)) {
+            case .licensed(let status): return status
+            case .state(let picked): held = picked
+            }
+        }
+        if held.trialStart != nil { return await trialStatus(held, now: now, ask: TrialAsk(force: force, readOnly: readOnly)) }
         return LicenseStatus(state: .unlicensed)
     }
 
-    func startTrialNow(_ state: StoredState) async -> LicenseStatus {
-        let latest = await askTrial(state, machineIdTimeout: timing.activateMachineId).latest
+    /// `startTrial()`'s trial ask, under the device `startTrial()` read (`device`).
+    func startTrialNow(_ state: StoredState, device: Device) async -> LicenseStatus {
+        let latest = await askTrial(state, machineIdTimeout: timing.activateMachineId, known: device).latest
         // The server's trial even when it could not be saved: kept for this process until a later
         // call saves it.
         return await trialStatus(latest, now: effectiveNow(state))
     }
 
     /// Asks the server for this device's trial (`trial`, with the earliest start the device holds
-    /// as `clientStart`), reading the device for at most `machineIdTimeout` and the request bounded
-    /// by `timeout` (else the HTTP bound), and saves its answer: `reached` when the server answered
-    /// at all, `latest` the state with its trial merged in.
+    /// as `clientStart`), under the device already read (`known`), else reading it for at most
+    /// `machineIdTimeout`, the request bounded by `timeout` (else the HTTP bound), and saves its
+    /// answer: `reached` when the server answered at all, `latest` the state with its trial merged in.
     func askTrial(
-        _ state: StoredState, machineIdTimeout: TimeInterval, timeout: TimeInterval? = nil
+        _ state: StoredState, machineIdTimeout: TimeInterval, timeout: TimeInterval? = nil, known: Device? = nil
     ) async -> (reached: Bool, latest: StoredState) {
-        let device = await self.device(machineIdTimeout, installKind: state.deviceKind)
+        let device: Device
+        if let known { device = known } else { device = await self.device(machineIdTimeout, installKind: state.deviceKind) }
         // The stash is the app's own adapter and can cost nothing: one that cannot be read is no
         // evidence, and `startTrial()` still answers.
         let stashed = try? await registry.readTrialStart()
@@ -223,7 +229,8 @@ extension License {
 
     /// The trial's status (`trialStatusOf`): live only on a valid trial lease, which says its end
     /// and its entitlements (`trialLeaseOf`). With `ask` (a `status()`), a trial whose lease does
-    /// not verify while its stored end is still ahead is asked for again first (`healTrial`).
+    /// not verify while its stored end is still ahead is asked for again first (`healTrial`), and a
+    /// running one reports its launch when due (`reportLaunch`); neither read-only.
     func trialStatus(_ state: StoredState, now: Int, ask: TrialAsk? = nil) async -> LicenseStatus {
         var lease = TrialLease.invalid
         if let stored = nonEmpty(state.trialLease) {
@@ -232,20 +239,25 @@ extension License {
         let status = trialStatusOf(
             state, now: now, leaseValid: lease.valid, leaseEndsAt: lease.endsAt, leaseEntitlements: lease.entitlements
         )
+        guard let ask, !ask.readOnly else { return status }
+        if status.state == .trial {
+            await reportLaunch(state, now: now)
+            return status
+        }
         let storedEndAhead = state.trialEndsAt.map { now < $0 } ?? false
-        guard let ask, !ask.readOnly, !lease.valid, storedEndAhead else { return status }
+        guard !lease.valid, storedEndAhead else { return status }
         return await healTrial(state, force: ask.force) ?? status
     }
 
-    /// A trial whose lease does not verify here while its stored end is still ahead: a lease
-    /// signed with the product's key before it was rotated (on a build that ships the new one),
-    /// one from before KeyGrant signed trial leases to the trial's end, or one never saved whole.
-    /// The stored end is unsigned, so it runs no trial on its own (`trialStatusOf`): the server is
-    /// asked for the trial again instead, under the usual waits (`askDue`, or when forced) and
-    /// bounded as a status check is, and its answer stands. An ask that brings back no trial this
-    /// build can verify starts the wait (`retryUnansweredMs` when nothing answered, `askAgainMs`
-    /// when the server did), so a device that is offline, or carries a key the product no longer
-    /// signs with, is not asked on every `status()`. Nil when it did not ask, or nothing answered.
+    /// A trial whose lease does not verify here while its stored end is still ahead: a lease signed
+    /// with the product's key before it was rotated (on a build that ships the new one), one signed
+    /// to end short of the trial's end, or one never saved whole. The stored end is unsigned, so it
+    /// runs no trial on its own (`trialStatusOf`): the server is asked for the trial again instead,
+    /// under the usual waits (`askDue`, or when forced) and bounded as a status check is, and its
+    /// answer stands. An ask that brings back no trial this build can verify starts the wait
+    /// (`retryUnansweredMs` when nothing answered, `askAgainMs` when the server did), so a device
+    /// that is offline, or carries a key the product no longer signs with, is not asked on every
+    /// `status()`. Nil when it did not ask, or nothing answered.
     private func healTrial(_ state: StoredState, force: Bool) async -> LicenseStatus? {
         let askedAt = clockNow()
         guard askDue(state, clockNow: askedAt, force: force) else { return nil }
@@ -266,11 +278,12 @@ struct TrialAsk: Sendable {
     var readOnly: Bool
 }
 
-/// The fingerprint an activation is made under, and what it hashes; or nil, answered `.network`
-/// for the app to retry. The device's own; when even that cannot be told: on an install already
-/// keyed by a machine id, nothing (a seat under the host name would read as another device to
-/// every run after it); otherwise the host name. A fingerprinter with no host-name alternate
-/// activates nothing.
+/// The fingerprint an activation is made under (a typed key's, or a bought key's pickup), and what
+/// it hashes; or nil: an activation answers `.network` for the app to retry, and a pickup asks
+/// nothing (the secret kept, the wait started). The device's own; when even that cannot be told:
+/// on an install already keyed by a machine id, nothing (a seat under the host name would read as
+/// another device to every run after it); otherwise the host name. A fingerprinter with no
+/// host-name alternate activates nothing.
 func activationIdentity(_ device: Device, installKind: DeviceKind?) -> (fingerprint: String, kind: DeviceKind?)? {
     if let own = device.own { return (own, device.kind) }
     guard installKind != .machine, let hostname = device.hostname else { return nil }

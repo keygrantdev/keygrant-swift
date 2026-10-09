@@ -1,7 +1,7 @@
 import Foundation
 
 /// The default storage: one JSON file per product, read and written so that neither a crash nor a
-/// busy disk ever costs a customer their licence (the reference's `createFileStorage`).
+/// busy disk ever costs a customer their licence.
 ///
 /// **Read:** only a MISSING file is "no state", and even then the newest whole temp file left
 /// beside it (a write that finished but was never renamed in) is read first, else the state at
@@ -58,7 +58,7 @@ public final class FileStorage: StorageAdapter {
     /// never the working directory and never one that roams between machines.
     ///  - macOS: `~/Library/Application Support/KeyGrant/<product>.json`. In a sandboxed app the
     ///    home folder is the app's container, so the file is inside the container.
-    ///  - Linux and others: `$XDG_CONFIG_HOME/keygrant/<product>.json`, else `~/.config/keygrant/…`.
+    ///  - Linux and others: `$XDG_CONFIG_HOME/keygrant/<product>.json`, else `~/.config/keygrant/...`.
     /// Read from the environment as it is when called (`HOME`, else the user's home folder).
     public static func defaultPath(product: String) -> String {
         let home = POSIX.environment("HOME").flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()

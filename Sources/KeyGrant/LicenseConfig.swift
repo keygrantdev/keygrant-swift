@@ -8,10 +8,11 @@ public struct LicenseConfig: Sendable {
     public var apiBaseURL: URL
     /// The product's public key, embedded at build time for offline verification: the `publicJwk`
     /// of `GET https://api.keygrant.dev/v1/products/<product>/pubkey` (public, no API key), as
-    /// JSON (`{"kty":"OKP","crv":"Ed25519","x":"…"}`), or its bare `x`. Fetch it once and ship it
+    /// JSON (`{"kty":"OKP","crv":"Ed25519","x":"..."}`), or its bare `x`. Fetch it once and ship it
     /// with the app.
     public var publicJWK: String
-    /// The running app's major version. Set it: the server binds and checks keys by it.
+    /// The running app's major version. Set it: the server binds and checks keys by it. Read as
+    /// the server reads a version: a 0.x build (0) runs as major 1, and so does anything below it.
     public var major: Int
     /// A human device name reported to the server (cut to 120 UTF-16 units).
     public var deviceName: String?

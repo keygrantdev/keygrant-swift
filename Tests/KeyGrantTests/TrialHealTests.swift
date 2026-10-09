@@ -4,7 +4,7 @@ import Testing
 @testable import KeyGrant
 
 /// `status()` heals a trial whose lease does not verify while its stored end is still ahead: it
-/// asks for the trial again (the reference's `healTrial`).
+/// asks for the trial again.
 @Suite("a trial whose lease does not verify while its stored end is ahead", suiteTimeLimit)
 struct TrialHealTests {
     /// A trial stored with a lease signed by another key: one the product signed before a rotation.
@@ -66,9 +66,9 @@ struct TrialHealTests {
         #expect(h.stored?.trialEndsAt == NOW + 5 * DAY && h.stored?.trialLease == lease && h.stored?.trialAt == NOW)
     }
 
-    @Test func healsALeaseFromBeforeTrialLeasesRanToTheTrialsEnd() async throws {
+    @Test func healsATrialLeaseSignedShortOfTheTrialsEnd() async throws {
         let h = try Harness()
-        // Seven days on a fourteen-day trial, as KeyGrant once signed them.
+        // Seven days on a fourteen-day trial.
         let capped = h.signer.trialLease(device: "fp-test", ttlSeconds: 7 * 24 * 3600)
         h.storage.set(StoredState(trialStart: NOW, trialEndsAt: NOW + 14 * DAY, trialLease: capped, lastSeen: NOW))
         h.clock.set(NOW + 8 * DAY)
@@ -128,8 +128,12 @@ struct TrialHealTests {
         #expect(await over.license.status() == LicenseStatus(state: .expired, reason: .trial))
         let valid = try Harness()
         let lease = valid.signer.trialLease(device: "fp-test", ttlSeconds: 5 * 24 * 3600)
-        valid.storage.set(StoredState(trialStart: NOW - 2 * DAY, trialEndsAt: NOW + 5 * DAY, trialLease: lease, lastSeen: NOW))
+        // Synced within the day, so no launch report is due either (`reportLaunch`).
+        valid.storage.set(
+            StoredState(trialStart: NOW - 2 * DAY, trialEndsAt: NOW + 5 * DAY, trialLease: lease, trialAt: NOW - DAY / 2, lastSeen: NOW)
+        )
         #expect(await valid.license.status().state == .trial)
+        await valid.license.launchReportSettled()
         #expect(!over.http.called("trial") && !valid.http.called("trial"))
     }
 

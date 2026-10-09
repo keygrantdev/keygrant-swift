@@ -7,7 +7,7 @@ import Testing
 /// minute, the shortest it keeps. A test past it is failed and its task cancelled, but that ends
 /// only what heeds cancellation: an await that does not (a task's `value`, a continuation nobody
 /// resumes) still holds the run. So the tests' own waits on the SDK carry a real-time deadline of
-/// their own (`answer(within:)`), and CI bounds the whole job (`ci/gitlab-ci.yml`).
+/// their own (`answer(within:)`).
 let suiteTimeLimit: any SuiteTrait = {
     if #available(macOS 13.0, iOS 16.0, watchOS 9.0, tvOS 16.0, *) {
         return TimeLimitTrait.timeLimit(.minutes(1))
@@ -213,11 +213,10 @@ final class MemoryStashItem: StashItem {
     }
 }
 
-/// A storage in memory with no `update` of its own (so the SDK reads, merges and writes), as the
-/// reference's suite has it: a read that never settles, a read that fails, a write held inside the
-/// adapter with the whole state it was handed, and writes that fail. A write from a task that was
-/// cancelled throws `CancellationError`, as a real one cut short would: a licence check's save must
-/// not be one.
+/// A storage in memory with no `update` of its own (so the SDK reads, merges and writes): a read
+/// that never settles, a read that fails, a write held inside the adapter with the whole state it
+/// was handed, and writes that fail. A write from a task that was cancelled throws
+/// `CancellationError`, as a real one cut short would: a licence check's save must not be one.
 final class MemoryStorage: StorageAdapter {
     private struct State {
         var stored: StoredState?
@@ -230,6 +229,8 @@ final class MemoryStorage: StorageAdapter {
         var reads = 0
         /// The read, counted from the first, that fails (`failRead`).
         var failReadAt: Int?
+        /// The read, counted from the first, before which another process saves a state (`saveBeforeRead`).
+        var savedBefore: (read: Int, state: StoredState)?
     }
 
     private let state: Locked<State>
@@ -249,6 +250,9 @@ final class MemoryStorage: StorageAdapter {
     func hangNextRead() { state.withValue { $0.hangNextRead = true } }
     /// The `nth` read from now fails, as a file an antivirus scan holds does.
     func failRead(_ nth: Int) { state.withValue { $0.failReadAt = $0.reads + nth } }
+    /// Just before the `nth` read from now, `stored` is saved, as by another process: that read,
+    /// and every one after it, sees it.
+    func saveBeforeRead(_ nth: Int, _ stored: StoredState) { state.withValue { $0.savedBefore = ($0.reads + nth, stored) } }
     /// The next write is held inside the adapter; `releaseWrite` lets it land.
     func holdNextWrite() { state.withValue { $0.holdNextWrite = true } }
 
@@ -274,6 +278,7 @@ final class MemoryStorage: StorageAdapter {
     func read(readOnly: Bool) async throws -> StoredState? {
         let (fail, hang) = state.withValue { state -> (Bool, Bool) in
             state.reads += 1
+            if let saved = state.savedBefore, saved.read == state.reads { state.stored = saved.state }
             if state.reads == state.failReadAt { return (true, false) }
             defer { state.hangNextRead = false }
             return (false, state.hangNextRead)
@@ -405,6 +410,22 @@ struct IdentifyingFingerprinter: Fingerprinter {
     }
 
     func identify(timeout: TimeInterval) async throws -> DeviceIdentity { try await answer() }
+}
+
+/// A fingerprinter that records the bound each read is given (`identify(timeout:)`), and never
+/// tells who the device is, so nothing of it is kept and every read asks it again.
+final class TimedFingerprinter: Fingerprinter {
+    private let given = Locked<[TimeInterval]>([])
+
+    /// The bound of each read, in order (seconds).
+    var bounds: [TimeInterval] { given.current }
+
+    func get() async throws -> String { throw FakeHTTP.NetworkDown() }
+
+    func identify(timeout: TimeInterval) async throws -> DeviceIdentity {
+        given.withValue { $0.append(timeout) }
+        return DeviceIdentity(fingerprint: nil)
+    }
 }
 
 /// A counter shared with a closure.

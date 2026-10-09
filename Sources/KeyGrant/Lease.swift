@@ -1,11 +1,11 @@
 import Crypto
 import Foundation
 
-/// The lease's `major` claim for a key with no upper bound (`shared/src/lease.ts` `OPEN_MAJOR`).
+/// The lease's `major` claim for a key with no upper bound.
 let openMajor = 1_000_000
 
-/// A lease's claims (`shared/src/lease.ts` `LeaseClaims`). Numbers are kept as `Double`, as
-/// JavaScript reads them, so every comparison and sum is the reference's.
+/// A lease's claims. Numbers are kept as `Double`, as JavaScript reads them, so every comparison
+/// and sum is the reference's.
 struct LeaseClaims: Sendable, Hashable {
     var iss = "keygrant"
     var sub: String
@@ -29,10 +29,10 @@ struct LeaseClaims: Sendable, Hashable {
 private let licenseModels: Set<String> = ["perpetual", "subscription", "trial"]
 
 extension LeaseClaims {
-    /// The claims a payload holds, checked as the reference checks them (its zod schema): nil when
-    /// any does not hold. An optional claim present as `null` does not hold either, as in zod,
-    /// but for `ent`, which never fails the claims: it is read leniently (`entitlementsOf`).
-    /// Claims it does not know are ignored.
+    /// The claims a payload holds, checked as the server's claims schema checks them: nil when any
+    /// does not hold. An optional claim present as `null` does not hold either, but for `ent`,
+    /// which never fails the claims: it is read leniently (`entitlementsOf`). Claims it does not
+    /// know are ignored.
     init?(json: LicenseJSON) {
         guard case .object(let claims) = json, claims["iss"]?.stringValue == "keygrant",
             let sub = nonEmptyString(claims["sub"]), let product = nonEmptyString(claims["product"]),
@@ -72,19 +72,18 @@ private func nonEmptyString(_ value: LicenseJSON?) -> String? {
     return string
 }
 
-/// A whole number of at least `minimum`, as zod's `int().nonnegative()` / `int().positive()` take it.
+/// A whole number of at least `minimum`.
 private func wholeNumber(_ value: LicenseJSON, atLeast minimum: Double) -> Double? {
     guard let number = value.numberValue, isWhole(number), number >= minimum else { return nil }
     return number
 }
 
-/// The entitlements (`ent`) as a verifier reads them (`shared/src/lease.ts` `entitlementsOf`,
-/// `docs/specs/sdk-contract.md` section 2.1): an object's flag, number and text members, kept as
-/// they are; every other member (an object, a list, `null`) dropped; and none at all from anything
-/// but an object (absent, `null`, a list, a text, a number, a flag). Never a refusal: a lease that
-/// verifies is the server's word, and one malformed entitlement must not take away the licence it
-/// rides on, or the entitlements beside it. No cap on how many, or how long, is enforced: the
-/// signature already says the server stood behind them.
+/// The entitlements (`ent`) as a verifier reads them: an object's flag, number and text members,
+/// kept as they are; every other member (an object, a list, `null`) dropped; and none at all from
+/// anything but an object (absent, `null`, a list, a text, a number, a flag). Never a refusal: a
+/// lease that verifies is the server's word, and one malformed entitlement must not take away the
+/// licence it rides on, or the entitlements beside it. No cap on how many, or how long, is
+/// enforced: the signature already says the server stood behind them.
 ///
 /// A flag and a number stay apart: `JSONText` reads `true` as `.bool` and `1` as `.number`, never
 /// one for the other as Foundation's `NSNumber` bridging can.
@@ -114,7 +113,7 @@ extension Entitlement {
     }
 }
 
-/// Whether a number is whole, as zod's `int()` reads it (`Number.isInteger`).
+/// Whether a number is whole, as JavaScript's `Number.isInteger` reads it.
 func isWhole(_ value: Double) -> Bool {
     value.isFinite && value.rounded(.towardZero) == value
 }
@@ -127,7 +126,7 @@ enum VerifyFailure: String, Sendable, Hashable {
     case expired
 }
 
-/// What verifying a lease gave (`shared/src/crypto.ts` `VerifyResult`).
+/// What verifying a lease gave.
 enum VerifyResult: Sendable, Hashable {
     case valid(LeaseClaims)
     /// Not valid; an expired lease still carries its claims.
@@ -146,12 +145,11 @@ enum VerifyResult: Sendable, Hashable {
     }
 }
 
-/// A lease verified offline (`shared/src/crypto.ts` `verifyLease`), in this order: exactly three
-/// parts (the header is NOT read: the algorithm and the key are the verifier's); the signature,
-/// canonical base64url (else `malformed`), over `header.payload` exactly as received (else
-/// `bad-signature`); the payload, canonical base64url of JSON matching the claims (else
-/// `bad-claims`); then the end, in milliseconds: a lease is valid during its `exp` second and
-/// not one millisecond after it.
+/// A lease verified offline, in this order: exactly three parts (the header is NOT read: the
+/// algorithm and the key are the verifier's); the signature, canonical base64url (else
+/// `malformed`), over `header.payload` exactly as received (else `bad-signature`); the payload,
+/// canonical base64url of JSON matching the claims (else `bad-claims`); then the end, in
+/// milliseconds: a lease is valid during its `exp` second and not one millisecond after it.
 func verifyLease(_ token: String, publicKey: Data, now: Int) -> VerifyResult {
     let parts = jsSplit(token, ".")
     guard parts.count == 3 else { return .invalid(.malformed, nil) }
@@ -211,8 +209,8 @@ func canonicalBase64URLDecode(_ input: String) -> Data? {
 func base64URLDecode(_ input: String) -> Data? {
     var units = input.utf16.map { unit -> UInt16 in
         switch unit {
-        case 0x2D: 0x2B  // - → +
-        case 0x5F: 0x2F  // _ → /
+        case 0x2D: 0x2B  // - to +
+        case 0x5F: 0x2F  // _ to /
         default: unit
         }
     }
@@ -267,7 +265,7 @@ func base64URLEncode(_ bytes: Data) -> String {
 // MARK: - the product's public key
 
 /// The raw Ed25519 key a product's public JWK holds (or its bare `x`), checked as WebCrypto's
-/// `importKey('jwk', …, ['verify'])` checks it: `kty` OKP, `crv` Ed25519, no private `d`, `use`
+/// `importKey('jwk', ..., ['verify'])` checks it: `kty` OKP, `crv` Ed25519, no private `d`, `use`
 /// (when given) `sig`, `key_ops` (when given) naming `verify`, `alg` (when given) EdDSA or Ed25519,
 /// and an `x` of 32 bytes.
 func publicKeyBytes(fromJWK text: String) throws -> Data {
@@ -309,8 +307,8 @@ public func hashFingerprint(_ raw: String) -> String {
     sha256Hex("keygrant|" + raw)
 }
 
-/// The `fp` claim for a device fingerprint (`shared/src/crypto.ts` `fingerprintClaim`): a lease's
-/// `fp` and a trial lease's `aid` carry it, never the fingerprint itself.
+/// The `fp` claim for a device fingerprint: a lease's `fp` and a trial lease's `aid` carry it,
+/// never the fingerprint itself.
 func fingerprintClaim(_ fingerprint: String) -> String {
     sha256Hex("keygrant-fp|" + fingerprint)
 }

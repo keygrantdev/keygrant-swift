@@ -1,9 +1,9 @@
 import Foundation
 
-/// The online validate (a renewal), decided without I/O (the reference's `renewal.ts`): when
-/// `status()` asks the server while it holds a lease that licenses this build
-/// (`asksOnValidLease`), and what an ask's answer saves and says (`renewalOutcome`). The engine
-/// makes the request, judges the lease a 200 carried, and saves the patch as the answer to its ask.
+/// The online validate (a renewal), decided without I/O: when `status()` asks the server while it
+/// holds a lease that licenses this build (`asksOnValidLease`), and what an ask's answer saves and
+/// says (`renewalOutcome`). The engine makes the request, judges the lease a 200 carried, and saves
+/// the patch as the answer to its ask.
 ///
 /// Licensing fails in favour of the paying customer: only an explicit verdict (a lease, or a
 /// refusal `refusalOf` names) gives a status. No answer at all, a 5xx, a 429, any other error, and

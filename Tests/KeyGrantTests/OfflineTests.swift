@@ -3,7 +3,7 @@ import Testing
 
 @testable import KeyGrant
 
-/// The pure decisions, past what the vectors pin (the reference's `offline.test.ts`).
+/// The pure decisions, past what the vectors pin.
 @Suite("offline decisions", suiteTimeLimit)
 struct OfflineTests {
     @Test(arguments: [
@@ -216,7 +216,7 @@ struct OfflineTests {
             let older: StatePatch = [.trialStart: .int(60), .trialEndsAt: .int(end), .trialLease: .string("OLDER")]
             #expect(merged(stored, older, Basis(trial: Stamp(at: 1_000))) == stored)
         }
-        // Wins over an older one, a later end included (an owner's extension).
+        // Wins over an older one, a later end included (a trial the server extended).
         let extended: StatePatch = [.trialStart: .int(60), .trialEndsAt: .int(900), .trialLease: .string("EXT")]
         #expect(merged(stored, extended, Basis(trial: Stamp(at: 3_000))) == StoredState(trialStart: 50, trialEndsAt: 900, trialLease: "EXT", trialAt: 3_000))
         // Wins over a stored one with no stamp (an older SDK's).

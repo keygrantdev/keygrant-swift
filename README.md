@@ -2,19 +2,19 @@
 
 Client-side licensing for macOS apps (SwiftUI or AppKit), and Linux. A port of the reference
 Electron SDK (`@keygrant/electron`), held to the same behaviour by the shared conformance vectors
-(`conformance/vectors.json`) and KeyGrant's SDK contract. The full guide is at
-https://keygrant.dev/docs.
+(`conformance/vectors.json`). The full guide is at https://keygrant.dev/docs.
 
 A licence is proven to the app by a signed lease (a JWT, EdDSA over Ed25519) that the app checks
 **offline** against the product's public key. The app goes online only to activate, to renew a
-lease near or past its end, or to tell the server it runs a newer major version. Licensing fails
+lease near or past its end, to tell the server it runs a newer major version, to pick up a key
+the customer bought from the app ([Buying from the app](#buying-from-the-app)), or, at most once
+a day and in the background, to report a running trial's launch. Licensing fails
 in favour of the paying customer: an outage, no network, a 5xx, a 429, an ambiguous 4xx or an
 answer the SDK cannot use never takes away a lease that is still valid. Only an explicit verdict
 from the server, or the lease's own end, does.
 
 - Swift 6 language mode (strict concurrency), Swift 6 toolchain (Xcode 16 or later).
-- macOS 12 or later; Linux (tested in the `swift:6.2` image). macOS has been tested by hand, not
-  yet by a CI job: see [Building and testing](#building-and-testing-this-package).
+- macOS 12 or later, and Linux.
 - One dependency: [`apple/swift-crypto`](https://github.com/apple/swift-crypto), which is
   CryptoKit itself on Apple platforms.
 
@@ -24,14 +24,14 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.1.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.2.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
 ]
 ```
 
-In Xcode: File > Add Package Dependencies…, enter `https://github.com/keygrantdev/keygrant-swift.git`,
+In Xcode: File > Add Package Dependencies..., enter `https://github.com/keygrantdev/keygrant-swift.git`,
 and add the `KeyGrant` library to the app target.
 
 ## Quick start (SwiftUI)
@@ -119,7 +119,7 @@ struct Root: View {
 }
 ```
 
-AppKit is the same: call the methods from a `Task { … }` and hop back to the main actor for the UI.
+AppKit is the same: call the methods from a `Task { ... }` and hop back to the main actor for the UI.
 Every call is `async` and safe to call from any thread or actor.
 
 ## The API
@@ -133,6 +133,7 @@ Every call is `async` and safe to call from any thread or actor.
 | `startTrial() async -> LicenseStatus` | never throws |
 | `deactivate() async throws -> DeactivateResult` | releases the seat and drops the local licence (trial evidence kept); `released` says whether the seat is free (below) |
 | `upgradeURL(paymentLink: URL) async -> URL?` | the payment link with this device's activation id as `client_reference_id` (never the key) |
+| `purchaseURL(paymentLink: URL) async throws -> URL?` | the payment link a customer with no key buys through, picked up by the app with nothing typed ([Buying from the app](#buying-from-the-app)); nil while a key is held |
 
 `deactivate()` drops the local licence whatever the server says, and answers `released: true`
 only when KeyGrant confirmed the release (a 200), or when this device held no activation to
@@ -153,7 +154,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 | `product` | | the product slug |
 | `apiBaseURL` | | `https://api.keygrant.dev` |
 | `publicJWK` | | the product's public key: the `publicJwk` of `GET /v1/products/<product>/pubkey`, as JSON, or its bare `x` |
-| `major` | `1` | the running app's major version |
+| `major` | `1` | the running app's major version, read as the server reads a version: a 0.x build sets `0` and runs as major 1 (as does anything below 1), so a lease for major 1 licenses it |
 | `deviceName` | nil | a label for the device list (cut to 120 UTF-16 units). On a Mac, `SCDynamicStoreCopyComputerName(nil, nil) as String?` gives "Rae's MacBook Pro" without the DNS lookup `Host.current()` makes |
 | `deviceHold` | `true` | below |
 | `httpTimeout` | 15 s | how long any one request may take; the SDK holds every request to it itself |
@@ -166,7 +167,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 | `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)) |
 | `.trial` | | the app; `trialDaysLeft`, `trialEndsAt` (ms: the end the trial lease was signed to), `trialEndDate`, `entitlements` |
 | `.expired` | `.offline` | the lease ran out and the server could not be reached: "connect to renew" |
-| `.expired` | `.trial` | the trial is over: buy |
+| `.expired` | `.trial` | the trial is over: buy (`purchaseURL`) |
 | `.invalid` | `.revoked` | the key was revoked or has expired, or this device was released |
 | `.invalid` | `.upgrade` | this build is newer than the key covers: buy an upgrade (`upgradeURL`) |
 | `.invalid` | `.outdated` | this build is older than the key covers: update the app |
@@ -186,6 +187,79 @@ lease does not verify with the embedded key: a configuration error), and `storag
 file could not be read or saved: try again). The key is trimmed and upper-cased before it is sent,
 so a pasted key with a newline, or one typed in lower case, works.
 
+## Buying from the app
+
+A customer on a trial (or with nothing yet) buys through `purchaseURL(paymentLink:)`, and the app
+picks the key up itself, for a product with "Converts in place" on: nothing to copy from an
+email, nothing to type. Add to the quick start's `Licensing`:
+
+```swift
+/// The product's payment link, from the dashboard.
+private let paymentLink = URL(string: "https://buy.stripe.com/test_abc")!
+/// Whether a checkout this app opened may still be going on.
+private var checkoutOpened = false
+
+/// "Buy" on the trial or activation screen.
+func buy() async {
+    guard let license else { return }
+    do {
+        // nil while a key is held: an upgrade goes through `upgradeURL(paymentLink:)`.
+        if let url = try await license.purchaseURL(paymentLink: paymentLink) {
+            NSWorkspace.shared.open(url)
+            checkoutOpened = true
+        }
+    } catch {
+        // The state could not be saved just now (or the link is not an absolute URL): say so.
+    }
+}
+
+/// When the customer is back (the app comes to the front, say), and only while a checkout is
+/// open: `refresh()` on a licensed install validates online every time.
+func customerReturned() async {
+    guard let license, checkoutOpened, await license.status().state != .licensed else { return }
+    status = await license.refresh()  // `.licensed` once the checkout has gone through
+    if status?.state == .licensed { checkoutOpened = false }
+}
+```
+
+- **The link** carries a reference, `kgp_` and a hash of a one-time secret this install keeps:
+  256 random bits from the system's secure generator, never the device's fingerprint. The secret
+  stays on the device and is sent only when the app asks for the key, so a link that leaks
+  (browser history, a screenshot) claims nothing. It is made the first time, kept, and every later
+  call hands out the same secret's link, so the key bought through either link is picked up
+  (paying twice buys two keys; the second comes by email). The link's own parameters and fragment
+  are kept; a `client_reference_id` already on it is replaced.
+- **The pickup:** once the checkout has minted the key, `refresh()` or `startTrial()` asks for it
+  at once, activates this device on it exactly as `activate(_:)` would, and answers `.licensed`.
+  `status()` asks on its own too, at most once every 5 minutes for a day after the link, bounded
+  as any check it makes (5 s), so a customer who simply returns to the app finds it licensed;
+  after that day only `refresh()` and `startTrial()` ask, so an abandoned checkout costs no launch
+  a request. `status()` and `refresh()` ask only under the device's own fingerprint (a machine
+  whose id did not read this time is asked nothing, and asks at the next call); `startTrial()`,
+  which reads the device once for both its asks, may use the host name. Each ask also sends every
+  fingerprint the run read (the first four the server takes), so a key bought earlier is answered
+  again to this device even when it was read differently since. "Not bought yet", no
+  network, or a server that cannot say keeps the secret for the next ask; an answer that the key
+  will never come this way (another device took it, the product has "Converts in place" off, an
+  activation refused) lets the secret go, and the customer types the key from the delivery email
+  as before.
+- **The secret goes** once a key bought with it is picked up, when any key is activated here or
+  this device is deactivated, and 30 days after the last `purchaseURL(paymentLink:)`. Letting it
+  go is this device's alone: it revokes nothing on the server.
+- **It throws** `InvalidPaymentLink` for a link that is not an absolute URL (before anything is
+  read), the storage's error when the state cannot be read or the secret cannot be saved (a link
+  whose secret was not kept could never be picked up), and
+  `LicenseCallError.previousCallUnfinished` behind a call that has not finished while no secret
+  is held (one held gives its link as it is).
+- **Turn the product's "Converts in place" switch on** once your app uses
+  `purchaseURL(paymentLink:)`: it is off by default, and until it is on every pickup is refused
+  and the customer types the key from the delivery email. Know the trade before you do: whoever
+  opens a checkout owns its pickup. Your Payment Link is public, so anyone can add a
+  `client_reference_id` of their own to it and get buyers to pay through their copy of the link;
+  the key bought that way is picked up by the link's maker, not the buyer. A link from the app is
+  the buyer's own; a leaked one claims nothing, as it carries only a hash of the app's secret. A
+  planted pickup shows in the key's history, and you can free the seat for the buyer.
+
 ## Embedding the public key
 
 The product's public key is the `publicJwk` field of
@@ -195,7 +269,7 @@ once and ship it with the app:
 
 ```sh
 curl -s https://api.keygrant.dev/v1/products/sluice/pubkey | jq -c .publicJwk
-# {"kty":"OKP","crv":"Ed25519","x":"…"}
+# {"kty":"OKP","crv":"Ed25519","x":"..."}
 ```
 
 Embed it as a string (a raw string literal, as in the quick start), or ship it as a bundled
@@ -266,9 +340,8 @@ let seats = status.entitlements["seats"]?.numberValue ?? 1
   activation, a renewal or a `refresh()`, and behind a call that has not finished), and on a
   `.trial` status, from the trial's lease, when that lease grants at least one.
 - **When it is empty:** on every other status (`.expired`, `.invalid` for any reason, a stored
-  refusal included, `.unlicensed`, `.unknown`), and when the lease grants none. A status from a
-  lease that grants none is then exactly what it was before entitlements were read, so an app
-  comparing whole statuses sees no change, and a lookup reads nil either way.
+  refusal included, `.unlicensed`, `.unknown`), and when the lease grants none, so a product that
+  grants no entitlements sees no difference: a lookup reads nil either way.
 - **A malformed claim never costs the licence:** a member that is not a flag, a number or a text
   is left out, and an `ent` that is not an object at all reads as none. The SDK enforces none of
   the caps the server holds entitlements to (how many, how long): the signature is what it trusts.
@@ -305,18 +378,26 @@ reads, merges and writes). Encode `StoredState` with `JSONEncoder`/`JSONDecoder`
 ## Trials and the Keychain
 
 `startTrial()` asks the server for this device's trial; the trial start only ever moves earlier.
+Call it when the customer starts the trial; there is no need to call it on every launch. A running
+trial reports its launch itself: `status()` answering `.trial` (with no key held) sends the server
+this device's trial, at most once a day and in the background, so the dashboard's trial funnel
+sees the trial come back. It saves the day's stamp first (and sends nothing when it cannot), then
+sends from a task of its own: `status()` never waits for that report, and a report that fails
+(offline, say) costs nothing; its answer is not read, so a change to the trial's length or
+entitlements reaches a running trial at its next `startTrial()`. A `startTrial()` counts as that
+day's report.
+
 A trial runs only while its trial lease is valid: KeyGrant signs it to the trial's own end, so an
 honest trial holds a valid one for every day it runs, offline included, and `trialEndsAt` is the
 end it was signed to. The end stored beside it in the state file is not signed: editing it
 changes nothing.
 
-A trial whose lease does not verify while its stored end is still ahead (a lease signed before
-the product's key was rotated, on a build that ships the new key; one from before KeyGrant signed
-trial leases to the trial's end) is asked for again by `status()`, bounded as any check
-`status()` makes (5 s). A trial it can verify is the answer. Otherwise the trial reads as
-expired, and `status()` waits before asking again: a minute when nothing answered, an hour when
-the server did. `refresh()` asks whatever the wait; a call behind one that has not finished never
-asks.
+A trial whose lease does not verify while its stored end is still ahead (a lease signed before the
+product's key was rotated, on a build that ships the new key; one signed to end short of the trial's
+end) is asked for again by `status()`, bounded as any check `status()` makes (5 s). A trial it can
+verify is the answer. Otherwise the trial reads as expired, and `status()` waits before asking
+again: a minute when nothing answered, an hour when the server did. `refresh()` asks whatever the
+wait; a call behind one that has not finished never asks.
 
 To make a reinstall unable to restart a trial, give a registry stash that outlives the app:
 
@@ -344,7 +425,8 @@ app licensed offline, but activation answers `network`.
 
 `License` is a `Sendable` final class: create one and share it. Calls on one `License` run one at a
 time, so `status()` from several places at once asks the server once and never writes back a stale
-state. A call waits for the one before it, but at most that call's HTTP bound plus 15 seconds;
+state. A call waits for the one before it, but at most that call's HTTP bound plus 15 seconds
+(plus 5 more after a `startTrial()`, which may ask twice: for a bought key, then for the trial);
 then it runs read-only (`isStalled`). Every call runs in a task of its own: cancelling the task
 that awaits it (a SwiftUI `.task` whose view went away) does not cut a licence check, or its save,
 short; it finishes within its bounds. The file reads and writes run on a thread of their own at
@@ -374,26 +456,17 @@ macOS 13 or later: Swift Testing keeps none on macOS 12); since a limit ends onl
 cancellation, the tests' own waits on the SDK also fail after 20 seconds of real time rather than
 hang.
 
-**Tested on macOS on 2026-10-06** (macOS 14.2 on arm64, the swift.org Swift 6.2 toolchain over
-Xcode 15.1's macOS 14.2 SDK) and on Linux (the `swift:6.2` image). The package builds with
-`-warnings-as-errors` in debug and release, the code behind `#if os(macOS)` /
-`#if canImport(Security)` included (`Sources/KeyGrant/PlatformExpert.swift`, the IOKit read of the
-`IOPlatformUUID`; `Sources/KeyGrant/KeychainTrialStash.swift`, the Keychain calls; the Darwin
-branches of the POSIX calls, `F_FULLFSYNC` and `st_mtimespec`, and of the tests' socket server),
-and 387 tests pass. The 388th, `runsFileWorkAtTheCallersClassAndNeverBelowUserInitiated`
-(ConfigTests), was left out on macOS 14.2: it does not compile against that SDK, whose Dispatch does
-not mark `DispatchQoS.QoSClass` `Sendable`. It needs Xcode 16's SDK, which this package requires
-anyway.
-
 ## Parity with the reference
 
-Every group of the conformance vectors is reproduced, every answer: 574 of the 583 vectors. The
-other 9 are the Windows cases of `machineIds`, which pin `reg.exe` output parsing; this SDK has no
-Windows reader. The decisions the vectors pin are the functions the SDK itself calls
-(`renewalOutcome`, `asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen` among them),
-and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
-apart from one left alone (absent). Where this SDK differs from the reference Electron SDK, and
-why:
+Every group of the conformance vectors is reproduced, every answer, but for two kinds of vector: the
+Windows cases of `machineIds`, which pin `reg.exe` output parsing (this SDK has no Windows reader),
+and the `majors` with a fraction (marked `jsOnly`), which the reference's JavaScript number can hold
+and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). The
+decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
+`asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `claimOutcome`, `claimRequest`,
+`referencedLink` among them), and answers are compared exactly: text unit for unit, and in a patch a
+field cleared (`null`) apart from one left alone (absent). Where this SDK differs from the reference
+Electron SDK, and why:
 
 - **`activate(_:)` never throws.** When the state file cannot be read or saved, the reference
   rejects; this answers `.failed(.storage)` (a `LicenseError` case the reference does not have),
@@ -401,8 +474,16 @@ why:
   and answers `DeactivateResult` (`released`) as the reference's answers `{released}`; its
   result may be discarded.
 - **`upgradeURL(paymentLink:)`** takes a `URL` and answers nil when the state cannot be read just
-  now (the reference rejects). The link's other query parameters are kept exactly as written (the
-  reference's `URLSearchParams` re-encodes them, with the same meaning).
+  now, or the link is not an absolute URL (the reference rejects both).
+- **`purchaseURL(paymentLink:)`** takes a `URL` and throws `InvalidPaymentLink` for one that is
+  not an absolute URL (the reference rejects with a `TypeError`). Both links are built by the
+  reference's one rule (`referencedLink`), but from the link as `URL` holds it: the reference's
+  URL parser writes a link in its normal form first (a lower-case scheme and host, a `/` for an
+  empty path), which this SDK leaves as given. The purchase secret comes from
+  `SystemRandomNumberGenerator` (`arc4random_buf` on Apple platforms, `getrandom` on Linux), the
+  reference's from Node's `randomBytes`.
+- **The launch report** is sent from a task of its own that nothing awaits (the reference's
+  promise that nothing awaits); `status()` answers before its device read and its request.
 - **`License(_:)` throws `LicenseConfigError`** for a public key it cannot use, at once. The
   reference fails later, at the first lease it verifies.
 - **Naming:** `LicenseClock`, not `Clock` (a public `Clock` would shadow the standard library's
@@ -421,13 +502,12 @@ why:
   adds half a second for its subprocess). There is no Windows reader: the Windows cases of the
   `machineIds` vectors are not replayed; the macOS ones are, through the IOKit-shaped source.
 - **The host-name fingerprint** uses Node's names for the platform and architecture this binary
-  runs as (`darwin`, `linux`, `openbsd`…; `x64`, `arm64`, `ppc64`, `s390x`, `riscv64`…), as
+  runs as (`darwin`, `linux`, `openbsd`...; `x64`, `arm64`, `ppc64`, `s390x`, `riscv64`...), as
   Node's `os.arch()` does for its process: a native Apple-silicon build says `arm64` where an x64
-  Electron build under Rosetta said `x64`. That fingerprint is only an alternate beside the
+  Electron build under Rosetta says `x64`. That fingerprint is only an alternate beside the
   machine id, so a seat is not affected.
-- **No default migration** from `<working directory>/.keygrant/<product>.json` (where SDKs before
-  the per-user folder kept the state): there is no older Swift SDK. `FileStorage(path:
-  migratingFrom:)` does it for an app that asks.
+- **No default migration** from `<working directory>/.keygrant/<product>.json`, the legacy location
+  older Electron SDK versions used. `FileStorage(path:migratingFrom:)` does it for an app that asks.
 - **The state file** is created readable by this user only (`0600`; the reference leaves it to the
   umask, usually `0644`): it holds the licence key.
 - **Numbers in the state file** are whole: a fraction is cut toward zero, a value past
@@ -450,7 +530,7 @@ why:
 - **The default HTTP adapter bounds the whole request** itself (`URLRequest.timeoutInterval` is an
   idle timeout, and Linux's `URLSession` does not keep even that). The product slug is
   percent-encoded in the path (no change for a slug).
-- **`KeychainTrialStash`** (new: the macOS analogue of the Windows registry stash an Electron app
+- **`KeychainTrialStash`** (the macOS analogue of the Windows registry stash an Electron app
   injects) only ever moves the stashed start earlier, and writes nothing over an item it cannot
   read.
 - **Strings are compared unit for unit**, as JavaScript's `===` does, not by Swift's canonical

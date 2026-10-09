@@ -39,6 +39,19 @@ public struct StoredState: Sendable, Hashable {
     public var verdictAt: Int?
     /// The default storage's revision of this state, one more on every save.
     public var rev: Int?
+    /// The one-time purchase SECRET `purchaseURL(paymentLink:)` keeps (43 URL-safe characters: 256
+    /// random bits), held while no key is: until a key bought with it is picked up, the server
+    /// answers that it never will be, or 30 days have passed since its link was last handed out.
+    /// Sent nowhere but in the ask for the key bought with it: a link carries only a hash of it.
+    public var purchaseToken: String?
+    /// When (guarded device clock) `purchaseURL(paymentLink:)` last handed the secret's link out:
+    /// its 30 days, and the day an unforced `status()` asks for the key, run from here.
+    public var purchaseTokenAt: Int?
+    /// When (device clock) the key bought with the secret was last asked for and did not come
+    /// back: `status()` asks again on its own 5 minutes after it.
+    public var claimAskedAt: Int?
+    /// When (guarded device clock) a running trial last reported its launch: at most once a day.
+    public var trialReportedAt: Int?
     /// Fields this SDK does not know (a newer SDK's), kept as they were.
     public var otherFields: [String: LicenseJSON]
 
@@ -61,6 +74,10 @@ public struct StoredState: Sendable, Hashable {
         deviceKind: DeviceKind? = nil,
         verdictAt: Int? = nil,
         rev: Int? = nil,
+        purchaseToken: String? = nil,
+        purchaseTokenAt: Int? = nil,
+        claimAskedAt: Int? = nil,
+        trialReportedAt: Int? = nil,
         otherFields: [String: LicenseJSON] = [:]
     ) {
         self.key = key
@@ -81,6 +98,10 @@ public struct StoredState: Sendable, Hashable {
         self.deviceKind = deviceKind
         self.verdictAt = verdictAt
         self.rev = rev
+        self.purchaseToken = purchaseToken
+        self.purchaseTokenAt = purchaseTokenAt
+        self.claimAskedAt = claimAskedAt
+        self.trialReportedAt = trialReportedAt
         self.otherFields = otherFields
     }
 }
@@ -125,11 +146,12 @@ extension StoredState: Codable {
 enum StateField: String, CaseIterable, Sendable {
     case key, activationId, lease, trialStart, trialEndsAt, trialLease, trialAt, lastSeen, checkedMajor
     case keptMajor, backoffSince, backoffMs, refused, refusedMajor, refusedFor, deviceKind, verdictAt, rev
+    case purchaseToken, purchaseTokenAt, claimAskedAt, trialReportedAt
 
     /// What a JSON value says of this field: nil when it is not of the field's type.
     func value(from json: LicenseJSON) -> StateValue? {
         switch self {
-        case .key, .activationId, .lease, .trialLease:
+        case .key, .activationId, .lease, .trialLease, .purchaseToken:
             return json.stringValue.map(StateValue.string)
         case .refused:
             return json.stringValue.flatMap(Refusal.init(rawValue:)).map { .string($0.rawValue) }
@@ -139,7 +161,7 @@ enum StateField: String, CaseIterable, Sendable {
             // Claim hashes: anything else in the list is not one.
             return json.arrayValue.map { .strings($0.compactMap(\.stringValue)) }
         case .trialStart, .trialEndsAt, .trialAt, .lastSeen, .checkedMajor, .keptMajor, .backoffSince,
-            .backoffMs, .refusedMajor, .verdictAt, .rev:
+            .backoffMs, .refusedMajor, .verdictAt, .rev, .purchaseTokenAt, .claimAskedAt, .trialReportedAt:
             return json.intValue.map(StateValue.int)
         }
     }
@@ -198,6 +220,10 @@ extension StoredState {
             case .deviceKind: deviceKind.map { .string($0.rawValue) }
             case .verdictAt: verdictAt.map(StateValue.int)
             case .rev: rev.map(StateValue.int)
+            case .purchaseToken: purchaseToken.map(StateValue.string)
+            case .purchaseTokenAt: purchaseTokenAt.map(StateValue.int)
+            case .claimAskedAt: claimAskedAt.map(StateValue.int)
+            case .trialReportedAt: trialReportedAt.map(StateValue.int)
             }
         }
         set {
@@ -220,14 +246,17 @@ extension StoredState {
             case .deviceKind: deviceKind = newValue?.string.flatMap(DeviceKind.init(rawValue:))
             case .verdictAt: verdictAt = newValue?.int
             case .rev: rev = newValue?.int
+            case .purchaseToken: purchaseToken = newValue?.string
+            case .purchaseTokenAt: purchaseTokenAt = newValue?.int
+            case .claimAskedAt: claimAskedAt = newValue?.int
+            case .trialReportedAt: trialReportedAt = newValue?.int
             }
         }
     }
 }
 
 /// A change to stored fields: each field it names is set, or cleared; a field it does not name is
-/// left as stored. The reference's `Partial<StoredState>`, where a field present as `undefined`
-/// clears it when spread.
+/// left as stored.
 struct StatePatch: Sendable, Hashable, ExpressibleByDictionaryLiteral {
     enum Change: Sendable, Hashable {
         case set(StateValue)

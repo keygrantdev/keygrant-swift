@@ -2,7 +2,7 @@ import Foundation
 
 /// The file operations under the default storage, and what it does around them: tries again on a
 /// busy file, a temp file flushed to the disk, and the clearing of what crashes and corrupt files
-/// leave behind (the reference's `storage-fs.ts`).
+/// leave behind.
 
 /// A new file being written: what is written is flushed to the disk by `sync`.
 protocol StorageFile: Sendable {

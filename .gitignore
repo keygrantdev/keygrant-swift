@@ -1,6 +1,5 @@
 .build/
 .swiftpm/
-/build-log.txt
 *.xcodeproj
 xcuserdata/
 DerivedData/

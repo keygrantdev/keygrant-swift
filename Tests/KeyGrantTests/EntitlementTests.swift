@@ -3,8 +3,7 @@ import Testing
 
 @testable import KeyGrant
 
-/// What a lease grants, as every status that rests on it hands it to the app (the reference's
-/// `describe('entitlements')` in license.test.ts).
+/// What a lease grants, as every status that rests on it hands it to the app.
 @Suite("entitlements", suiteTimeLimit)
 struct EntitlementTests {
     let pro: [String: Entitlement] = ["edition": "pro", "seats": 5, "beta": false]
@@ -199,8 +198,8 @@ struct EntitlementTests {
 }
 
 /// The status a lease gives offline, and the entitlements it carries (`leaseStatus`,
-/// `trialLeaseOf`, `trialStatusOf`; the reference's `describe('entitlements in a status')` in
-/// offline.test.ts): only a lease that licenses, or a trial lease that runs a trial, carries them.
+/// `trialLeaseOf`, `trialStatusOf`): only a lease that licenses, or a trial lease that runs a
+/// trial, carries them.
 @Suite("entitlements in a status", suiteTimeLimit)
 struct EntitlementsInAStatusTests {
     let pro: [String: Entitlement] = ["edition": "pro", "seats": 5]
@@ -281,7 +280,7 @@ struct EntitlementsInAStatusTests {
     }
 }
 
-/// The `ent` claim, read leniently (`entitlementsOf`, `docs/specs/sdk-contract.md` section 2.1).
+/// The `ent` claim, read leniently (`entitlementsOf`).
 @Suite("the entitlements claim", suiteTimeLimit)
 struct EntitlementsClaimTests {
     @Test func keepsEveryKindOfValueAsSigned() {

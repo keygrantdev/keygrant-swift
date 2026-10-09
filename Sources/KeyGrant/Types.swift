@@ -56,9 +56,7 @@ public struct LicenseStatus: Sendable, Hashable {
     /// `ent` claim): `status.entitlements["edition"] == .string("pro")`. On a `.licensed` status,
     /// from the licence's lease; on a `.trial` status, from the trial's. Empty on every other
     /// status (an `.invalid` one included, whatever the lease held grants), and when the lease
-    /// grants none, so a status from a lease with no entitlements equals the one it was before
-    /// they were read. A malformed member of the claim is left out, and never costs the licence
-    /// (`docs/specs/sdk-contract.md` section 2.1).
+    /// grants none. A malformed member of the claim is left out, and never costs the licence.
     ///
     /// Names are dictionary keys, which Swift compares by canonical equivalence (an "é" composed
     /// and one decomposed are one key); KeyGrant signs names only in Unicode's composed form (NFC),
@@ -249,7 +247,7 @@ public struct DeviceIdentity: Sendable, Hashable {
     /// What `fingerprint` hashes. Only a seat keyed by a `.machine` id is held to its device;
     /// nil means unknown, and such a seat never is.
     public var kind: DeviceKind?
-    /// Fingerprints this device has had besides it (the host-name one it had before the machine id).
+    /// Other fingerprints this device answers to (such as the host-name fingerprint).
     public var alternates: [String]
 
     public init(fingerprint: String?, kind: DeviceKind? = nil, alternates: [String] = []) {
@@ -262,7 +260,9 @@ public struct DeviceIdentity: Sendable, Hashable {
 /// Why a `License` call could not run.
 public enum LicenseCallError: Error, Sendable, Hashable, CustomStringConvertible {
     /// `deactivate()` behind a call that has not finished: the local licence cannot be dropped
-    /// safely until it has. Try again.
+    /// safely until it has. Also `purchaseURL(paymentLink:)` there when no purchase secret is held:
+    /// a new one could not be saved, and a link whose secret is not kept could never be picked up.
+    /// Try again.
     case previousCallUnfinished
 
     public var description: String {
@@ -272,9 +272,18 @@ public enum LicenseCallError: Error, Sendable, Hashable, CustomStringConvertible
     }
 }
 
+/// A payment link `purchaseURL(paymentLink:)` cannot carry a purchase reference: not an absolute URL
+/// (a scheme, `:` and the rest), such as a path (`/buy`) or a bare host (`buy.stripe.com/x`).
+public struct InvalidPaymentLink: Error, Sendable, Hashable, CustomStringConvertible {
+    /// The link as it was given.
+    public var link: String
+
+    public var description: String { "the payment link is not an absolute URL: \(link)" }
+}
+
 /// A `LicenseConfig` the SDK cannot work with.
 public enum LicenseConfigError: Error, Sendable, Hashable, CustomStringConvertible {
-    /// `publicJWK` is not an Ed25519 public key (a JWK `{"kty":"OKP","crv":"Ed25519","x":"…"}`,
+    /// `publicJWK` is not an Ed25519 public key (a JWK `{"kty":"OKP","crv":"Ed25519","x":"..."}`,
     /// or its bare `x`).
     case invalidPublicKey(String)
 

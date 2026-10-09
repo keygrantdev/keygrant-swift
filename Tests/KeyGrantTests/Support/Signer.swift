@@ -3,14 +3,14 @@ import Foundation
 
 @testable import KeyGrant
 
-/// The moment most tests run at, and a day, as the reference's suite has them.
+/// The moment most tests run at, and a day.
 let NOW = 1_757_000_000_000
 let DAY = 86_400_000
 let HOUR = 3_600_000
 let PRODUCT = "sluice"
 let KEY = "SLUICE-AAAA-BBBB-CCCC-DDDD"
 
-/// Signs leases as the worker does (`shared/src/crypto.ts` `signLease`), with a key of its own.
+/// Signs leases as the server does, with a key of its own.
 struct Signer: Sendable {
     /// The private key, raw (a CryptoKit key is kept as bytes so this stays `Sendable` everywhere).
     private let privateKey: Data
@@ -39,7 +39,7 @@ struct Signer: Sendable {
         sign(input: "\(part(header)).\(part(payload))")
     }
 
-    /// A lease as the worker signs one: `iat` the second of `at`, `exp` that plus `ttl`.
+    /// A lease as the server signs one: `iat` the second of `at`, `exp` that plus `ttl`.
     func lease(
         sub: String = KEY,
         product: String = PRODUCT,
@@ -69,7 +69,7 @@ struct Signer: Sendable {
         return sign(payload: .object(claims))
     }
 
-    /// A trial lease as the worker signs one: `sub` `trial:<claim>`, `aid` the claim.
+    /// A trial lease as the server signs one: `sub` `trial:<claim>`, `aid` the claim.
     func trialLease(device: String, kind: DeviceKind? = .machine, ttlSeconds: Int = 7 * 24 * 3600, at: Int = NOW) -> String {
         let claim = fingerprintClaim(device)
         let iat = at / 1000

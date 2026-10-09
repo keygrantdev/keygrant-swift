@@ -2,11 +2,10 @@ import Foundation
 
 @testable import KeyGrant
 
-/// Files in memory, as one or more processes see them (the reference's `memoryFs`): failures
-/// queued per operation (`failNext`) or given every time (`failAlways`), an operation held until
-/// released (`holdNext`), something another process does just before an operation (`before`),
-/// each file's mtime (else now), every operation in order (`ops`) and every one that changes a
-/// file (`changes`).
+/// Files in memory, as one or more processes see them: failures queued per operation (`failNext`)
+/// or given every time (`failAlways`), an operation held until released (`holdNext`), something
+/// another process does just before an operation (`before`), each file's mtime (else now), every
+/// operation in order (`ops`) and every one that changes a file (`changes`).
 final class MemoryFileSystem: StorageFileSystem {
     enum Op: String, Sendable {
         case readFile, create, write, sync, close, rename, remove, list, modifiedMs, makeDirectory, syncDirectory

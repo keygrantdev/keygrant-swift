@@ -9,11 +9,12 @@ import Musl
 #endif
 
 /// A file system call that failed, with the errno name the reference's logic is written in
-/// (`ENOENT`, `EBUSY`, …), or `ECONFLICT` for a save another process kept changing under it.
+/// (`ENOENT`, `EBUSY`, ...), or `ECONFLICT` for a save another process kept changing under it.
 public struct StorageError: Error, Sendable, Hashable, CustomStringConvertible {
-    /// The errno name: `ENOENT`, `EACCES`, `EBUSY`, `EIO`, … (`E<number>` for one without a name here).
+    /// The errno name: `ENOENT`, `EACCES`, `EBUSY`, `EIO`, ... (`E<number>` for one without a name
+    /// here).
     public var code: String
-    /// What failed: `open`, `read`, `rename`, …
+    /// What failed: `open`, `read`, `rename`, ...
     public var operation: String
     public var path: String
 

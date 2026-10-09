@@ -152,8 +152,12 @@ struct StatusTests {
     @Test func treatsAnEmptyKeyOrLeaseAsNone() async throws {
         let h = try Harness()
         let trial = h.signer.trialLease(device: "fp-test", ttlSeconds: 24 * 3600)
-        h.storage.set(StoredState(key: "", activationId: "act_1", lease: "", trialStart: NOW - DAY, trialEndsAt: NOW + DAY, trialLease: trial))
+        // Synced within the day, so no launch report is due either.
+        h.storage.set(StoredState(
+            key: "", activationId: "act_1", lease: "", trialStart: NOW - DAY, trialEndsAt: NOW + DAY, trialLease: trial, trialAt: NOW - DAY / 2
+        ))
         #expect(await h.license.status() == LicenseStatus(state: .trial, trialDaysLeft: 1, trialEndsAt: NOW + DAY))
+        await h.license.launchReportSettled()
         #expect(h.http.calls.isEmpty)
     }
 }
@@ -232,12 +236,21 @@ struct UpgradeURLTests {
         ("https://buy.test/u#pay", "https://buy.test/u?client_reference_id=act_1#pay"),
         ("https://buy.test/u?", "https://buy.test/u?client_reference_id=act_1"),
         ("https://buy.test/u?a=1&&b=x%20y+z", "https://buy.test/u?a=1&b=x%20y+z&client_reference_id=act_1"),
-        ("https://buy.test/u?client%5Freference%5Fid=old&a=1", "https://buy.test/u?client_reference_id=act_1&a=1"),
+        // One link rule with `purchaseURL` (`referencedLink`): only a name that is exactly
+        // client_reference_id as written is replaced, and the reference always goes last.
+        ("https://buy.test/u?client%5Freference%5Fid=old&a=1", "https://buy.test/u?client%5Freference%5Fid=old&a=1&client_reference_id=act_1"),
+        ("https://buy.test/u?client_reference_id=old&a=1", "https://buy.test/u?a=1&client_reference_id=act_1"),
         ("https://buy.test/u?flag&client_reference_id", "https://buy.test/u?flag&client_reference_id=act_1"),
     ])
     func setsTheReferenceOnALinkOfAnyShape(link: String, expected: String) async throws {
         let h = try Harness(StoredState(key: KEY, activationId: "act_1"))
         #expect(await h.license.upgradeURL(paymentLink: try #require(URL(string: link)))?.absoluteString == expected)
+    }
+
+    @Test(arguments: ["/buy", "buy.stripe.com/test_abc"])
+    func isNilForALinkThatIsNotAnAbsoluteURL(link: String) async throws {
+        let h = try Harness(StoredState(key: KEY, activationId: "act_1"))
+        #expect(await h.license.upgradeURL(paymentLink: try #require(URL(string: link))) == nil)
     }
 
     @Test func encodesAnActivationIdThatIsNotPlainText() async throws {

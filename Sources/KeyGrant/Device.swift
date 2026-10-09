@@ -1,7 +1,7 @@
 import Foundation
 
 /// Who this device is, for holding a lease to it and telling the server (a validate's
-/// `fingerprints`): as far as can be told this call, and never guessed (the reference's `device.ts`).
+/// `fingerprints`): as far as can be told this call, and never guessed.
 struct Device: Sendable, Hashable {
     /// This run's own fingerprint, or nil when it cannot be told this time.
     var own: String?

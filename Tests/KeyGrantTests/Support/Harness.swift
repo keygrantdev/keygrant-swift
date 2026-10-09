@@ -2,9 +2,8 @@ import Foundation
 
 @testable import KeyGrant
 
-/// A `License` over fakes, as the reference's suite builds one (`harness()` in license.test.ts):
-/// a storage in memory, a registry stash, a clock and a server the test sets, a fingerprinter
-/// that answers `fp-test` unless told otherwise, and a key to sign leases with.
+/// A `License` over fakes: a storage in memory, a registry stash, a clock and a server the test sets, a
+/// fingerprinter that answers `fp-test` unless told otherwise, and a key to sign leases with.
 final class Harness: Sendable {
     let license: License
     let storage: MemoryStorage

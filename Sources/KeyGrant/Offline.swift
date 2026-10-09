@@ -1,8 +1,8 @@
 import Foundation
 
-/// What the SDK decides from what the device holds, without asking the server (the reference's
-/// `offline.ts`): whether a lease licenses this build, what a trial shows, which refusal still
-/// stands, when to ask the server again, and how a save lands on a state another process changed.
+/// What the SDK decides from what the device holds, without asking the server: whether a lease
+/// licenses this build, what a trial shows, which refusal still stands, when to ask the server
+/// again, and how a save lands on a state another process changed.
 enum Waits {
     /// How long after the server answered without a lease before the SDK asks again on its own.
     static let askAgainMs = 60 * 60_000
@@ -13,6 +13,15 @@ enum Waits {
     /// How far the clock guard may run ahead of a fresh lease's signing time before it is brought back.
     static let clockToleranceMs = 60 * 60_000
     static let dayMs = 86_400_000
+}
+
+/// The major a build runs as: the configured one, read as the server reads a version (0.x as 1, and
+/// majors from 1 up). So a build configured as major 0 is major 1 everywhere the SDK uses the major
+/// (sent with an activation, a validate and a claim, and judged by `checkLease`, `keptWith`,
+/// `standingRefusal` and the renewal decisions), rather than refused offline as `outdated` by every
+/// lease. None configured is 1.
+func majorOf(_ configured: Int?) -> Int {
+    max(1, configured ?? 1)
 }
 
 /// What a licence lease says about this build, offline.
@@ -75,11 +84,10 @@ func checkLease(_ verified: VerifyResult, product: String, major: Int, holder: L
     return .ok(test: claims.test == true, claims: claims)
 }
 
-/// The status a stored licence lease gives, judged offline (`checkLease`), when the server gives
-/// no verdict on it (the reference's `leaseStatus`): licensed, with the check's test flag (its one
-/// source) and the lease's entitlements (empty when it grants none, so such a lease leaves the
-/// status as it was before entitlements were read); `.expired`/`.offline` once it has run out;
-/// `.invalid` with the reason, and the key, when it is not for this build or this device;
+/// The status a stored licence lease gives, judged offline (`checkLease`), when the server gives no
+/// verdict on it: licensed, with the check's test flag (its one source) and the lease's
+/// entitlements (empty when it grants none); `.expired`/`.offline` once it has run out; `.invalid`
+/// with the reason, and the key, when it is not for this build or this device;
 /// `.invalid`/`.tampered`, with no key, when it is not this licence's at all. Only a lease that
 /// licenses carries entitlements. Test licences verify like any other (they are signed with the
 /// product's real key); the flag is how an app tells them apart.
@@ -139,9 +147,9 @@ struct TrialLease: Sendable, Hashable {
     static let invalid = TrialLease(valid: false)
 }
 
-/// A trial lease, verified, as a trial's status reads it (the reference's `trialLeaseOf`): whether
-/// it is valid here (`trialLeaseValid`), and, when it is, the end it was signed to and its
-/// entitlements. A lease that is not valid here says nothing of either.
+/// A trial lease, verified, as a trial's status reads it: whether it is valid here
+/// (`trialLeaseValid`), and, when it is, the end it was signed to and its entitlements. A lease
+/// that is not valid here says nothing of either.
 func trialLeaseOf(_ verified: VerifyResult, product: String, claims deviceClaims: [String], canTell: Bool) -> TrialLease {
     guard case .valid(let claims) = verified,
         trialLeaseValid(verified, product: product, claims: deviceClaims, canTell: canTell)
@@ -240,6 +248,9 @@ struct Basis: Sendable, Hashable {
     var about: About?
     /// The server's answer to a trial ask: stamped `trialAt`.
     var trial: Stamp?
+    /// A save about a purchase secret (its drop, or the wait after an ask for the key bought with
+    /// it): its purchase fields land only while it is about the stored one (`aboutStored`).
+    var purchase: PurchaseBasis?
 }
 
 /// What the answer to an ask writes: what the server said, and the wait before asking again.
@@ -306,9 +317,11 @@ private func outOfDate(_ latest: StoredState, _ basis: Basis) -> Superseded? {
 /// `merged`). Stamped: an answer or an activation with `verdictAt`, a trial answer with `trialAt`.
 /// A save about an activation no longer stored keeps only its trial evidence; an answer older than
 /// the stored one loses its verdict fields, as does an activation of the same seat; a trial answer
-/// older than the stored one loses its end and lease, taken together from the newest. The trial
-/// start only ever moves earlier, whoever saved it; the kept major of the stored activation only
-/// ever up (a deactivation, based on nothing, still clears it).
+/// older than the stored one loses its end and lease, taken together from the newest; a save about
+/// a purchase secret no longer stored (or, for a wait, one whose link was handed out again since)
+/// loses its purchase fields (`aboutStored`). The trial start only ever moves
+/// earlier, whoever saved it; the kept major of the stored activation only ever up (a
+/// deactivation, based on nothing, still clears it).
 func merged(_ latest: StoredState, _ patch: StatePatch, _ basis: Basis = Basis()) -> StoredState {
     let stamp = basis.answer ?? basis.activation
     var applied = patch
@@ -320,6 +333,7 @@ func merged(_ latest: StoredState, _ patch: StatePatch, _ basis: Basis = Basis()
     case nil: break
     }
     if let trial = basis.trial, outdated(latest.trialAt, trial) { applied = applied.omitting(trialAnswerFields) }
+    if let purchase = basis.purchase, !aboutStored(latest, purchase) { applied = applied.omitting(purchaseFields) }
     let trialStart = earliest(latest.trialStart, applied.int(.trialStart))
     var result = applied.applied(to: latest)
     if let trialStart { result.trialStart = trialStart }

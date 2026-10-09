@@ -151,8 +151,8 @@ struct TrialTests {
     }
 
     @Test func answersUnlicensedForATrialLeaseStoredWithoutAStartAskingNothing() async throws {
-        // Only a stored start is a trial this device began (sdk-contract.md 5.2); no save leaves a
-        // lease or an end without one.
+        // Only a stored start is a trial this device began; no save leaves a lease or an end
+        // without one.
         let h = try Harness()
         let lease = h.sign("trial:fp-test", model: "trial", ttl: 5 * 24 * 3600)
         h.storage.set(StoredState(trialEndsAt: NOW + 5 * DAY, trialLease: lease, lastSeen: NOW))
@@ -185,11 +185,14 @@ struct TrialTests {
         let h = try Harness()
         _ = trialServer(h, start: NOW, end: NOW + 14 * DAY)
         #expect(await h.license.startTrial() == LicenseStatus(state: .trial, trialDaysLeft: 14, trialEndsAt: NOW + 14 * DAY))
-        // Ten days on, offline: no renewal, and none needed.
+        // Ten days on, offline: no renewal, and none needed. The launch is reported in the
+        // background, and its failing offline costs nothing.
         h.http.setFail(true)
         h.clock.set(NOW + 10 * DAY)
         #expect(await h.license.status() == LicenseStatus(state: .trial, trialDaysLeft: 4, trialEndsAt: NOW + 14 * DAY))
-        #expect(h.http.actions == ["trial"])
+        await h.license.launchReportSettled()
+        #expect(h.http.actions == ["trial", "trial"])
+        #expect(h.stored?.trialEndsAt == NOW + 14 * DAY && h.stored?.trialReportedAt == NOW + 10 * DAY)
     }
 
     @Test func takesTheTrialsEndFromItsLeaseWhenNoneIsStored() async throws {
@@ -281,7 +284,7 @@ struct UnsavedTrialTests {
         #expect(h.stored?.trialEndsAt == NOW - 2 * DAY && h.stored?.trialAt == NOW + 1)
     }
 
-    @Test func takesANewerAnswersLaterEndTooAnOwnersExtension() async throws {
+    @Test func takesANewerAnswersLaterEndTooATrialTheServerExtended() async throws {
         let (h, _) = try await keptTrial()
         // The answer the other instance had came with a lease signed to the new end.
         let extended = h.signer.trialLease(device: "fp-test", kind: nil, ttlSeconds: 20 * 24 * 3600)

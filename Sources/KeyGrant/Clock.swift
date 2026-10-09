@@ -1,10 +1,9 @@
 import Foundation
 
-/// The clock guard (anti clock-rollback), decided without I/O (the reference's `clock.ts`): the
-/// time a lease is judged at, never earlier than the latest the device has seen (`guardedNow`);
-/// where a lease the server has just signed brings the guard back to after a clock that jumped
-/// ahead (`clockCorrection`, `serverNow`); and the latest time seen that a save writes
-/// (`savedLastSeen`, `save`).
+/// The clock guard (anti clock-rollback), decided without I/O: the time a lease is judged at, never
+/// earlier than the latest the device has seen (`guardedNow`); where a lease the server has just
+/// signed brings the guard back to after a clock that jumped ahead (`clockCorrection`,
+/// `serverNow`); and the latest time seen that a save writes (`savedLastSeen`, `save`).
 
 /// Now, by the clock guard: never earlier than the latest time the device has seen (`lastSeen`),
 /// so a clock put back cannot bring an expired lease back.

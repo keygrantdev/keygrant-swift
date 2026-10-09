@@ -1,15 +1,16 @@
 import Foundation
 
 /// Client-side licensing for a desktop app. Verifies signed JWT leases OFFLINE and only contacts
-/// the server to activate, to renew a lease nearing its end or past it, or to tell it of a newer
-/// major: so an outage, no network, a 5xx, a 429, an ambiguous 4xx or an unusable answer never
-/// locks out a paying customer while their lease is valid. Only an explicit verdict from the
-/// server, or the lease's own end, does.
+/// the server to activate, to renew a lease nearing its end or past it, to tell it of a newer
+/// major, to pick up a key bought through `purchaseURL(paymentLink:)`, or (at most once a day, in
+/// the background) to report a running trial's launch: so an outage, no network, a 5xx, a 429, an
+/// ambiguous 4xx or an unusable answer never locks out a paying customer while their lease is
+/// valid. Only an explicit verdict from the server, or the lease's own end, does.
 ///
 /// Calls on one `License` run one at a time; create one per app and share it. Every call answers:
 /// `status()`, `refresh()` and `startTrial()` never throw (storage that cannot be read just now is
-/// `.unknown`/`.storage`), `activate(_:)` answers a `LicenseError`, and only `deactivate()`, which
-/// the customer asked for and can try again, throws.
+/// `.unknown`/`.storage`), `activate(_:)` answers a `LicenseError`, and only `deactivate()` and
+/// `purchaseURL(paymentLink:)`, which the customer asked for and can try again, throw.
 public final class License: Sendable {
     let product: String
     let major: Int
@@ -30,6 +31,9 @@ public final class License: Sendable {
     /// The server's trial when it could not be saved (`startTrial`), kept for this process: merged
     /// into every state a status reads, and saved by the next call that can.
     let unsavedTrial = Locked<UnsavedTrial?>(nil)
+    /// The launch report last sent (`reportLaunch`), which the SDK itself never awaits: kept so a
+    /// test can wait for it (`launchReportSettled`).
+    let launchReport = Locked<Task<Void, Never>?>(nil)
 
     /// A licence for `config.product`. Throws `LicenseConfigError` when `config.publicJWK` is not
     /// an Ed25519 public key (embedded at build time, so this is found the first time the app runs).
@@ -40,7 +44,8 @@ public final class License: Sendable {
     init(_ config: LicenseConfig, timing: Timing) throws {
         publicKey = try publicKeyBytes(fromJWK: config.publicJWK)
         product = config.product
-        major = config.major
+        // As the server reads it (`majorOf`): one reading, used wherever the major is.
+        major = majorOf(config.major)
         var base = config.apiBaseURL.absoluteString
         if base.hasSuffix("/") { base.removeLast() }
         self.base = base
@@ -81,8 +86,12 @@ public final class License: Sendable {
     /// The licence's status. Offline-first: it asks the server only when the lease nears its end
     /// or has ended, when a refusal is due to be asked again, when this build is a newer major than
     /// the server last heard on an open lease, when a trial's lease does not verify while the trial
-    /// is stored as still running (a lease signed before the product's key was rotated, say), or
-    /// when `forceOnline`; each at most once per wait unless forced. Never throws.
+    /// is stored as still running (a lease signed before the product's key was rotated, say), when
+    /// no key is held and a purchase secret is (`purchaseURL(paymentLink:)`: the key bought with
+    /// it, asked for under this device's own fingerprint, 5 minutes after the last ask, for a day
+    /// after the link), or when `forceOnline`; each at most once per wait unless forced. A running
+    /// trial also reports its launch, at most once a day, in the background: the answer never
+    /// waits for it. Never throws.
     public func status(forceOnline: Bool = false) async -> LicenseStatus {
         await calls.run { readOnly in
             if !readOnly { await self.saveUnsavedTrial() }
@@ -118,27 +127,62 @@ public final class License: Sendable {
     }
 
     /// Begin (or re-sync) a trial for this device. Answers as `status()` does: `.unknown` when the
-    /// state cannot be read, and the server's trial when it cannot be saved. Never throws.
+    /// state cannot be read, and the server's trial when it cannot be saved. With no key held and
+    /// a purchase secret held (`purchaseURL(paymentLink:)`), the key bought with it is asked for
+    /// first, whatever the wait says, under the device's own fingerprint or else its host name:
+    /// bought, it is the answer (`.licensed`), and no trial is asked. The device is read once for
+    /// both asks. Never throws.
     public func startTrial() async -> LicenseStatus {
-        await calls.run { readOnly in
+        // It may make two requests (a claim bounded as a status check is, then the trial ask): the
+        // calls behind it wait that much longer.
+        await calls.run(extraGrace: timing.statusCheck) { readOnly in
             guard let state = await self.loadForStatus(readOnly: readOnly) else {
                 return readOnly ? LicenseStatus.unreadable.stalled() : .unreadable
             }
-            if !readOnly { return await self.startTrialNow(state) }
+            if !readOnly {
+                // The device read once, given an activation's time, for both asks.
+                let device = await self.device(self.timing.activateMachineId, installKind: state.deviceKind)
+                switch await self.pickUp(state, ask: PickupAsk(start: true, force: true, device: device)) {
+                case .licensed(let status): return status
+                case .state(let picked): return await self.startTrialNow(picked, device: device)
+                }
+            }
             return await self.trialStatus(state, now: self.effectiveNow(state)).stalled()
         }
     }
 
     /// `paymentLink` with this device's ACTIVATION id as `client_reference_id`, or nil when the
-    /// device holds no activated licence (or its state cannot be read just now). Send a customer
-    /// there to buy an upgrade for the key they hold. The activation id, never the key: a URL
-    /// lands in browser history and logs, and the activation id grants nothing on its own.
+    /// device holds no activated licence, its state cannot be read just now, or the link is not an
+    /// absolute URL. Send a customer there to buy an upgrade for the key they hold. The activation
+    /// id, never the key: a URL lands in browser history and logs, and the activation id grants
+    /// nothing on its own. The link is built as `purchaseURL(paymentLink:)` builds its own.
     public func upgradeURL(paymentLink: URL) async -> URL? {
         // Read-only: this runs outside the one-at-a-time order, beside any call.
         guard let state = try? await load(readOnly: true), nonEmpty(state.key) != nil,
             let activationId = nonEmpty(state.activationId)
         else { return nil }
-        return withClientReference(paymentLink, activationId)
+        return referencedLink(paymentLink, activationId)
+    }
+
+    /// `paymentLink` with a PURCHASE REFERENCE as its `client_reference_id`, or nil while the
+    /// device holds a key (any key: use `upgradeURL(paymentLink:)`, or the plain link). Send a
+    /// customer with no key there to buy: the checkout keeps the reference on the key it mints, and
+    /// once they are back the SDK asks for that key (at once on `refresh()` or `startTrial()`, and
+    /// from `status()` for a day after the link), activates this device on it and answers
+    /// `.licensed`, with nothing typed.
+    ///
+    /// The reference is a hash of a one-time secret (256 random bits, never the fingerprint) that
+    /// stays on the device and is sent only in that ask, so a link that leaks claims nothing. The
+    /// secret is made the first time, kept, and its link handed out again by every later call; it
+    /// is dropped 30 days after the last one, or once a key bought with it is picked up. Throws
+    /// `InvalidPaymentLink` when the link is not an absolute URL (before anything is read), the
+    /// storage's error when the state cannot be read or the secret cannot be saved (a link whose
+    /// secret is not kept could never be picked up), and `LicenseCallError.previousCallUnfinished`
+    /// behind a call that has not finished while no secret is held (one held gives its link as it
+    /// is, nothing saved).
+    public func purchaseURL(paymentLink: URL) async throws -> URL? {
+        guard absoluteLink(paymentLink) != nil else { throw InvalidPaymentLink(link: paymentLink.absoluteString) }
+        return try await calls.runThrowing { readOnly in try await self.purchaseURLNow(paymentLink, readOnly: readOnly) }
     }
 }
 
@@ -146,34 +190,4 @@ public final class License: Sendable {
 struct UnsavedTrial: Sendable {
     var patch: StatePatch
     var basis: Basis
-}
-
-/// `link` with `client_reference_id` set to `value`: the first one replaced in place and any
-/// others removed, else added, as `URLSearchParams.set` does; the link's other parameters kept as
-/// written, and its fragment after them. Built as text, so a link of any shape gives nil at worst
-/// (`URLComponents`' setters stop the process on a query they do not like).
-func withClientReference(_ link: URL, _ value: String) -> URL? {
-    let text = link.absoluteString
-    let hash = text.firstIndex(of: "#") ?? text.endIndex
-    let fragment = text[hash...]
-    let beforeFragment = text[..<hash]
-    let mark = beforeFragment.firstIndex(of: "?")
-    let base = beforeFragment[..<(mark ?? beforeFragment.endIndex)]
-    let query = mark.map { beforeFragment[beforeFragment.index(after: $0)...] } ?? ""
-    let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    let reference = "client_reference_id=" + (value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? value)
-    var pairs: [String] = []
-    var placed = false
-    for pair in query.split(separator: "&") {
-        let rawName = String(pair.prefix { $0 != "=" })
-        let name = rawName.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? rawName
-        if name == "client_reference_id" {
-            if !placed { pairs.append(reference) }
-            placed = true
-        } else {
-            pairs.append(String(pair))
-        }
-    }
-    if !placed { pairs.append(reference) }
-    return URL(string: "\(base)?\(pairs.joined(separator: "&"))\(fragment)")
 }
