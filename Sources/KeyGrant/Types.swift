@@ -263,9 +263,7 @@ public struct DeviceIdentity: Sendable, Hashable {
 /// Why a `License` call could not run.
 public enum LicenseCallError: Error, Sendable, Hashable, CustomStringConvertible {
     /// `deactivate()` behind a call that has not finished: the local licence cannot be dropped
-    /// safely until it has. Also `purchaseURL(paymentLink:)` there when no purchase secret is held:
-    /// a new one could not be saved, and a link whose secret is not kept could never be picked up.
-    /// Try again.
+    /// safely until it has. Try again.
     case previousCallUnfinished
 
     public var description: String {
@@ -273,15 +271,6 @@ public enum LicenseCallError: Error, Sendable, Hashable, CustomStringConvertible
         case .previousCallUnfinished: "a previous licence call has not finished; try again"
         }
     }
-}
-
-/// A payment link `purchaseURL(paymentLink:)` cannot carry a purchase reference: not an absolute URL
-/// (a scheme, `:` and the rest), such as a path (`/buy`) or a bare host (`buy.stripe.com/x`).
-public struct InvalidPaymentLink: Error, Sendable, Hashable, CustomStringConvertible {
-    /// The link as it was given.
-    public var link: String
-
-    public var description: String { "the payment link is not an absolute URL: \(link)" }
 }
 
 /// What `License.require(_:)` throws when the licence does not grant an entitlement: names it.

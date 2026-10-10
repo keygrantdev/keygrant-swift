@@ -39,17 +39,6 @@ public struct StoredState: Sendable, Hashable {
     public var verdictAt: Int?
     /// The default storage's revision of this state, one more on every save.
     public var rev: Int?
-    /// The one-time purchase SECRET `purchaseURL(paymentLink:)` keeps (43 URL-safe characters: 256
-    /// random bits), held while no key is: until a key bought with it is picked up, the server
-    /// answers that it never will be, or 30 days have passed since its link was last handed out.
-    /// Sent nowhere but in the ask for the key bought with it: a link carries only a hash of it.
-    public var purchaseToken: String?
-    /// When (guarded device clock) `purchaseURL(paymentLink:)` last handed the secret's link out:
-    /// its 30 days, and the day an unforced `status()` asks for the key, run from here.
-    public var purchaseTokenAt: Int?
-    /// When (device clock) the key bought with the secret was last asked for and did not come
-    /// back: `status()` asks again on its own 5 minutes after it.
-    public var claimAskedAt: Int?
     /// When (guarded device clock) a running trial last reported its launch: at most once a day.
     public var trialReportedAt: Int?
     /// Fields this SDK does not know (a newer SDK's), kept as they were.
@@ -74,9 +63,6 @@ public struct StoredState: Sendable, Hashable {
         deviceKind: DeviceKind? = nil,
         verdictAt: Int? = nil,
         rev: Int? = nil,
-        purchaseToken: String? = nil,
-        purchaseTokenAt: Int? = nil,
-        claimAskedAt: Int? = nil,
         trialReportedAt: Int? = nil,
         otherFields: [String: LicenseJSON] = [:]
     ) {
@@ -98,9 +84,6 @@ public struct StoredState: Sendable, Hashable {
         self.deviceKind = deviceKind
         self.verdictAt = verdictAt
         self.rev = rev
-        self.purchaseToken = purchaseToken
-        self.purchaseTokenAt = purchaseTokenAt
-        self.claimAskedAt = claimAskedAt
         self.trialReportedAt = trialReportedAt
         self.otherFields = otherFields
     }
@@ -109,11 +92,13 @@ public struct StoredState: Sendable, Hashable {
 extension StoredState {
     /// The state a JSON value holds. A field of the wrong type is left out (a number with a
     /// fraction is cut to a whole one), a field this SDK does not know is kept in `otherFields`,
-    /// and a value that is no object holds no state at all.
+    /// and a value that is no object holds no state at all. What an earlier version stored and this
+    /// one retired (`retiredFields`) is not read, not even into `otherFields`, so it is never written
+    /// back.
     public init(json: LicenseJSON) {
         self.init()
         guard case .object(let members) = json else { return }
-        for (name, value) in members {
+        for (name, value) in members where !retiredFields.contains(name) {
             if let field = StateField(rawValue: name) {
                 self[field] = field.value(from: value)
             } else {
@@ -122,9 +107,10 @@ extension StoredState {
         }
     }
 
-    /// The state as a JSON object, under the field names every KeyGrant SDK uses.
+    /// The state as a JSON object, under the field names every KeyGrant SDK uses. A retired name an
+    /// app put in `otherFields` is not written either.
     public var json: LicenseJSON {
-        var members = otherFields.filter { StateField(rawValue: $0.key) == nil }
+        var members = otherFields.filter { StateField(rawValue: $0.key) == nil && !retiredFields.contains($0.key) }
         for field in StateField.allCases {
             if let value = self[field] { members[field.rawValue] = value.json }
         }
@@ -142,16 +128,20 @@ extension StoredState: Codable {
     }
 }
 
+/// What an earlier version stored to buy from the app with no key typed (its purchase secret and the
+/// two stamps beside it). Retired: never read nor written, so the next save clears them.
+let retiredFields: Set<String> = ["purchaseToken", "purchaseTokenAt", "claimAskedAt"]
+
 /// A field of the stored state, by the name every SDK writes it under.
 enum StateField: String, CaseIterable, Sendable {
     case key, activationId, lease, trialStart, trialEndsAt, trialLease, trialAt, lastSeen, checkedMajor
     case keptMajor, backoffSince, backoffMs, refused, refusedMajor, refusedFor, deviceKind, verdictAt, rev
-    case purchaseToken, purchaseTokenAt, claimAskedAt, trialReportedAt
+    case trialReportedAt
 
     /// What a JSON value says of this field: nil when it is not of the field's type.
     func value(from json: LicenseJSON) -> StateValue? {
         switch self {
-        case .key, .activationId, .lease, .trialLease, .purchaseToken:
+        case .key, .activationId, .lease, .trialLease:
             return json.stringValue.map(StateValue.string)
         case .refused:
             return json.stringValue.flatMap(Refusal.init(rawValue:)).map { .string($0.rawValue) }
@@ -161,7 +151,7 @@ enum StateField: String, CaseIterable, Sendable {
             // Claim hashes: anything else in the list is not one.
             return json.arrayValue.map { .strings($0.compactMap(\.stringValue)) }
         case .trialStart, .trialEndsAt, .trialAt, .lastSeen, .checkedMajor, .keptMajor, .backoffSince,
-            .backoffMs, .refusedMajor, .verdictAt, .rev, .purchaseTokenAt, .claimAskedAt, .trialReportedAt:
+            .backoffMs, .refusedMajor, .verdictAt, .rev, .trialReportedAt:
             return json.intValue.map(StateValue.int)
         }
     }
@@ -220,9 +210,6 @@ extension StoredState {
             case .deviceKind: deviceKind.map { .string($0.rawValue) }
             case .verdictAt: verdictAt.map(StateValue.int)
             case .rev: rev.map(StateValue.int)
-            case .purchaseToken: purchaseToken.map(StateValue.string)
-            case .purchaseTokenAt: purchaseTokenAt.map(StateValue.int)
-            case .claimAskedAt: claimAskedAt.map(StateValue.int)
             case .trialReportedAt: trialReportedAt.map(StateValue.int)
             }
         }
@@ -246,9 +233,6 @@ extension StoredState {
             case .deviceKind: deviceKind = newValue?.string.flatMap(DeviceKind.init(rawValue:))
             case .verdictAt: verdictAt = newValue?.int
             case .rev: rev = newValue?.int
-            case .purchaseToken: purchaseToken = newValue?.string
-            case .purchaseTokenAt: purchaseTokenAt = newValue?.int
-            case .claimAskedAt: claimAskedAt = newValue?.int
             case .trialReportedAt: trialReportedAt = newValue?.int
             }
         }

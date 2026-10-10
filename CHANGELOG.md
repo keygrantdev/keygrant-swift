@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- `License.purchaseURL(paymentLink:)` and `InvalidPaymentLink` are removed, and the SDK no longer asks for
+  a bought key at `status()`, `refresh()` or `startTrial()`. To sell from the app, open your Payment Link
+  from your own Buy button; the customer types the key from the delivery email (`activate(_:)`). A purchase
+  secret an earlier version stored is ignored, and left out the next time the SDK saves its state.
+- `StoredState` no longer has `purchaseToken`, `purchaseTokenAt` or `claimAskedAt`, nor their `init`
+  parameters: a storage adapter or test code that sets them stops compiling, and the same names among its
+  `otherFields` are never written.
+
 ## 0.3.0
 
 - Key sets: `LicenseConfig.publicJWK` takes the product's key set (`{"keys":[...]}`, as `/pubkey`

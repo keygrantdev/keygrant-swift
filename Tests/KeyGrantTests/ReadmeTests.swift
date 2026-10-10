@@ -94,39 +94,13 @@ struct ReadmeTests {
         #expect(!base.isPro && base.seats == 1)
     }
 
-    /// The Buying from the app example, as it is written there: the link it opens, and the key
-    /// the checkout minted picked up by the refresh when the customer is back, only while the
-    /// checkout is open.
-    @Test func buysAndPicksUpTheKeyAsTheBuyingSectionShows() async throws {
+    /// The Buying from the app example: the Buy button opens the payment link as it is (no reference
+    /// of this install's on it), and the customer then enters the key the checkout emailed.
+    @Test func buysThroughThePlainLinkAsTheBuyingSectionShows() throws {
         let example = try #require(try swiftBlocks().first { $0.heading == "## Buying from the app" })
-        #expect(example.code.contains("if let url = try await license.purchaseURL(paymentLink: paymentLink) {"))
-        #expect(example.code.contains("guard let license, checkoutOpened, await license.status().state != .licensed else { return }"))
-        #expect(example.code.contains("status = await license.refresh()"))
-        #expect(example.code.contains("if status?.state == .licensed { checkoutOpened = false }"))
-        let h = try Harness()
-        let license = h.license
-        let paymentLink = try #require(URL(string: "https://buy.stripe.com/test_abc"))
-        var checkoutOpened = false
-        var status: LicenseStatus?
-        if let url = try await license.purchaseURL(paymentLink: paymentLink) {
-            #expect(url.absoluteString.hasPrefix("https://buy.stripe.com/test_abc?client_reference_id=kgp_"))
-            checkoutOpened = true
-        }
-        // Back before the checkout went through: not bought yet, and the checkout stays open.
-        h.http.on("claim", status: 200, json: ["pending": true])
-        if checkoutOpened, await license.status().state != .licensed {
-            status = await license.refresh()
-            if status?.state == .licensed { checkoutOpened = false }
-        }
-        #expect(status == LicenseStatus(state: .unlicensed) && checkoutOpened)
-        // Back once it has: licensed, and the checkout is over.
-        h.http.on("claim") { _ in Purchase.bought(h) }
-        if checkoutOpened, await license.status().state != .licensed {
-            status = await license.refresh()
-            if status?.state == .licensed { checkoutOpened = false }
-        }
-        #expect(status == LicenseStatus(state: .licensed, key: Purchase.boughtKey) && !checkoutOpened)
-        #expect(h.http.count("claim") == 3)
+        #expect(example.code.contains("NSWorkspace.shared.open(paymentLink)"))
+        #expect(example.code.contains("(`activate(_:)`)"))
+        #expect(!example.code.contains("client_reference_id"))
     }
 }
 

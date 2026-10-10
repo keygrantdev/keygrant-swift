@@ -203,9 +203,8 @@ final class CallQueue: Sendable {
     }
 
     /// `work` once every call queued before it has settled (or overrun its grace), told whether it
-    /// must run read-only. `extraGrace` more for a call that may make a second, shorter request
-    /// (`startTrial()`: a claim, then its trial ask), so the calls behind it wait that much longer.
-    func run<T: Sendable>(extraGrace: TimeInterval = 0, _ work: @escaping @Sendable (_ readOnly: Bool) async -> T) async -> T {
+    /// must run read-only.
+    func run<T: Sendable>(_ work: @escaping @Sendable (_ readOnly: Bool) async -> T) async -> T {
         let ticket = CallTicket(finished: false)
         let previous = state.withValue { state -> CallTicket in
             defer { state.last = ticket }
@@ -220,7 +219,7 @@ final class CallQueue: Sendable {
                 state.writing += 1
                 return false
             }
-            ticket.start(graceEndsAt: deadline(self.ticker.now(), after: self.grace + extraGrace))
+            ticket.start(graceEndsAt: deadline(self.ticker.now(), after: self.grace))
             let result = await work(readOnly)
             if !readOnly { self.state.withValue { $0.writing -= 1 } }
             ticket.settle()

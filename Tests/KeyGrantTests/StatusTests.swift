@@ -160,6 +160,17 @@ struct StatusTests {
         await h.license.launchReportSettled()
         #expect(h.http.calls.isEmpty)
     }
+    /// A key issued under a trial model is a licence lease: judged as any other, never as the device's trial.
+    @Test func aTypedKeyWhoseLeaseModelIsTrialIsLicensedOfflineAndNeverReportsATrial() async throws {
+        let h = try Harness()
+        h.storage.set(StoredState(key: KEY, activationId: "act_1", lease: h.sign(model: "trial"), lastSeen: NOW, checkedMajor: 1))
+        h.http.setFail(true)
+        #expect(await h.license.status() == LicenseStatus(state: .licensed, key: KEY))
+        await h.license.launchReportSettled()
+        #expect(h.http.calls.isEmpty)
+        #expect(h.stored?.trialLease == nil)
+    }
+
 }
 
 @Suite("the default adapters", suiteTimeLimit)
@@ -236,8 +247,8 @@ struct UpgradeURLTests {
         ("https://buy.test/u#pay", "https://buy.test/u?client_reference_id=act_1#pay"),
         ("https://buy.test/u?", "https://buy.test/u?client_reference_id=act_1"),
         ("https://buy.test/u?a=1&&b=x%20y+z", "https://buy.test/u?a=1&b=x%20y+z&client_reference_id=act_1"),
-        // One link rule with `purchaseURL` (`referencedLink`): only a name that is exactly
-        // client_reference_id as written is replaced, and the reference always goes last.
+        // The link rule (`referencedLink`): only a name that is exactly client_reference_id as
+        // written is replaced, and the reference always goes last.
         ("https://buy.test/u?client%5Freference%5Fid=old&a=1", "https://buy.test/u?client%5Freference%5Fid=old&a=1&client_reference_id=act_1"),
         ("https://buy.test/u?client_reference_id=old&a=1", "https://buy.test/u?a=1&client_reference_id=act_1"),
         ("https://buy.test/u?flag&client_reference_id", "https://buy.test/u?flag&client_reference_id=act_1"),

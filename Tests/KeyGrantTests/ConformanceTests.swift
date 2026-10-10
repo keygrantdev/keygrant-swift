@@ -40,8 +40,8 @@ struct ConformanceTests {
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 46 && total == 797 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions == 784)
+        #expect(groups.count == 40 && total == 703 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions == 690)
     }
 
     static let answered: Set<String> = [
@@ -50,9 +50,8 @@ struct ConformanceTests {
         "guardedNow", "clockCorrections", "mapServerError", "refusalOf", "enteredKey", "trimDeviceName", "noAnswer",
         "parseLeaseBody", "parseTrialBody", "mountinfo", "machineIds", "renewals", "validLeaseAsks", "devices",
         "identities", "savedLastSeen", "leaseStatuses", "trialLeaseStatuses", "entitlementNumbers",
-        // Added with the purchase from the trial (ConformancePurchaseTests.swift).
-        "majors", "purchaseUrls", "purchaseTokenKept", "claimDue", "parseClaimBody", "claimOutcomes", "trialReportDue",
-        "purchaseReferences", "claimBodies",
+        // The groups after the first ones (ConformanceLaterTests.swift).
+        "majors", "referencedLinks", "trialReportDue",
         // Added with key sets and the entitlement helpers (ConformanceKeyTests.swift).
         "keyIds", "keySets", "grants",
     ]
@@ -97,13 +96,7 @@ struct ConformanceTests {
             "STALE_TEMP_MS": .number(staleTempMs),
             "UPDATE_ATTEMPTS": .number(Double(updateAttempts)),
             "UNKNOWN_HOST": .string(unknownHost),
-            "CLAIM_WAIT_MS": .number(Double(Waits.claimWaitMs)),
-            "PURCHASE_TOKEN_MS": .number(Double(Waits.purchaseTokenMs)),
             "TRIAL_REPORT_MS": .number(Double(Waits.trialReportMs)),
-            "PURCHASE_REFERENCE_PREFIX": .string(purchaseReferencePrefix),
-            "CLAIM_EAGER_MS": .number(Double(Waits.claimEagerMs)),
-            "MAX_CLAIM_FINGERPRINTS": .number(Double(maxClaimFingerprints)),
-            "MAX_CLAIM_FINGERPRINT_LENGTH": .number(Double(maxClaimFingerprintLength)),
         ]
         #expect(constants == .object(ours))
     }
@@ -221,7 +214,7 @@ struct ConformanceTests {
             let patch = refusalPatch(refused, major: try vector.int("major"), ownClaim: vector["device"]?["ownClaim"]?.stringValue)
             #expect(patch.json == vector["expect"], "\(vector.name)")
         }
-        let named = ["LEASED": leased, "UNKEYED": unkeyed, "NO_PURCHASE": noPurchase]
+        let named = ["LEASED": leased, "UNKEYED": unkeyed]
         for vector in try group("leasePatches") {
             let patch = try #require(named[try vector.string("patch")], "\(vector.name)")
             #expect(patch.json == vector["expect"], "\(vector.name)")
@@ -672,10 +665,6 @@ extension Basis {
         if let trial = json["trial"], !trial.isNull {
             guard let at = trial["at"]?.intValue else { throw VectorError(description: "a trial ask with no at") }
             self.trial = Stamp(at: at, seen: trial["seen"]?.intValue)
-        }
-        if let purchase = json["purchase"], !purchase.isNull {
-            guard let token = purchase["token"]?.stringValue else { throw VectorError(description: "a purchase with no token") }
-            self.purchase = PurchaseBasis(token: token, at: purchase["at"]?.intValue)
         }
     }
 }

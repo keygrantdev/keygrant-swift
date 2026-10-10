@@ -52,8 +52,6 @@ extension License {
         }
         let evaluated = await evaluate(lease, now: now, key: entered, activationId: activationId, deviceKind: identity.kind)
         guard case .ok(_, let claims) = evaluated else { return .failed(.invalidLease) }
-        // As a bought key's pickup saves one (`activationPatch`), the purchase secret cleared too:
-        // else a later deactivate would let a pending pickup activate the device again.
         let patch = activationPatch(
             Activation(key: entered, activationId: activationId, lease: lease, claims: claims, now: now, major: major, kind: identity.kind)
         )
@@ -76,9 +74,8 @@ extension License {
                 released = false
             }
         }
-        // Stamped, so that an answer to an older ask is not saved over it. The purchase secret goes
-        // too: a key the customer may have meant for another machine is never picked up here.
-        try await save(unkeyed + noPurchase + [.verdictAt: .int(effectiveNow(state))])
+        // Stamped, so that an answer to an older ask is not saved over it.
+        try await save(unkeyed + [.verdictAt: .int(effectiveNow(state))])
         return DeactivateResult(released: released)
     }
 
@@ -111,21 +108,13 @@ extension License {
         if nonEmpty(state.key) != nil, let lease = nonEmpty(state.lease) {
             return await licenseStatus(state, lease: lease, now: now, force: force, readOnly: readOnly)
         }
-        // No licence held: a key bought through `purchaseURL` is picked up first, never read-only.
-        var held = state
-        if !readOnly {
-            switch await pickUp(state, ask: PickupAsk(start: false, force: force)) {
-            case .licensed(let status): return status
-            case .state(let picked): held = picked
-            }
-        }
-        if held.trialStart != nil { return await trialStatus(held, now: now, ask: TrialAsk(force: force, readOnly: readOnly)) }
+        if state.trialStart != nil { return await trialStatus(state, now: now, ask: TrialAsk(force: force, readOnly: readOnly)) }
         return LicenseStatus(state: .unlicensed)
     }
 
-    /// `startTrial()`'s trial ask, under the device `startTrial()` read (`device`).
-    func startTrialNow(_ state: StoredState, device: Device) async -> LicenseStatus {
-        let latest = await askTrial(state, machineIdTimeout: timing.activateMachineId, known: device).latest
+    /// `startTrial()`'s trial ask, the device read with an activation's time.
+    func startTrialNow(_ state: StoredState) async -> LicenseStatus {
+        let latest = await askTrial(state, machineIdTimeout: timing.activateMachineId).latest
         // The server's trial even when it could not be saved: kept for this process until a later
         // call saves it.
         return await trialStatus(latest, now: effectiveNow(state))
@@ -136,10 +125,9 @@ extension License {
     /// `machineIdTimeout`, the request bounded by `timeout` (else the HTTP bound), and saves its
     /// answer: `reached` when the server answered at all, `latest` the state with its trial merged in.
     func askTrial(
-        _ state: StoredState, machineIdTimeout: TimeInterval, timeout: TimeInterval? = nil, known: Device? = nil
+        _ state: StoredState, machineIdTimeout: TimeInterval, timeout: TimeInterval? = nil
     ) async -> (reached: Bool, latest: StoredState) {
-        let device: Device
-        if let known { device = known } else { device = await self.device(machineIdTimeout, installKind: state.deviceKind) }
+        let device = await self.device(machineIdTimeout, installKind: state.deviceKind)
         // The stash is the app's own adapter and can cost nothing: one that cannot be read is no
         // evidence, and `startTrial()` still answers.
         let stashed = try? await registry.readTrialStart()
@@ -279,9 +267,8 @@ struct TrialAsk: Sendable {
     var readOnly: Bool
 }
 
-/// The fingerprint an activation is made under (a typed key's, or a bought key's pickup), and what
-/// it hashes; or nil: an activation answers `.network` for the app to retry, and a pickup asks
-/// nothing (the secret kept, the wait started). The device's own; when even that cannot be told:
+/// The fingerprint an activation is made under, and what it hashes; or nil: an activation answers
+/// `.network` for the app to retry. The device's own; when even that cannot be told:
 /// on an install already keyed by a machine id, nothing (a seat under the host name would read as
 /// another device to every run after it); otherwise the host name. A fingerprinter with no
 /// host-name alternate activates nothing.

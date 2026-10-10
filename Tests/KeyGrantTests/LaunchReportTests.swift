@@ -17,7 +17,7 @@ struct LaunchReportTests {
         return state
     }
 
-    /// Beyond the `trialReportDue` vectors (ConformancePurchaseTests): a stamp no clock could reach
+    /// Beyond the `trialReportDue` vectors (ConformanceLaterTests): a stamp no clock could reach
     /// does not overflow the difference.
     @Test func isDueOnAStampNoClockCouldReachWithoutOverflowing() {
         #expect(trialReportDue(StoredState(trialReportedAt: Int.min), now: NOW))
@@ -192,15 +192,15 @@ struct UnknownMembersTests {
         .object(members.merging(Self.extra) { given, _ in given })
     }
 
-    @Test func activateValidateTrialAndClaim() async throws {
-        let h = try Harness(StoredState(purchaseToken: Purchase.token, purchaseTokenAt: NOW))
+    @Test func activateValidateAndTrial() async throws {
+        let h = try Harness()
         let lease = h.signer.lease(sub: "KEY-1")
-        h.http.on("claim", status: 200, json: with(["key": "KEY-1", "activationId": "act_1", "lease": .string(lease)]))
-        h.http.on("validate", status: 200, json: with(["lease": .string(lease)]))
         h.http.on("activate", status: 200, json: with(["lease": .string(lease), "activationId": "act_1"]))
+        h.http.on("validate", status: 200, json: with(["lease": .string(lease)]))
+        #expect(await h.license.activate("KEY-1") == .activated)
         #expect(await h.license.status() == LicenseStatus(state: .licensed, key: "KEY-1"))
         #expect(await h.license.refresh() == LicenseStatus(state: .licensed, key: "KEY-1"))
-        #expect(await h.license.activate("KEY-1") == .activated)
+        #expect(h.http.count("validate") == 1)
 
         let trial = try Harness()
         let trialLease = trial.signer.trialLease(device: "fp-test", kind: nil, ttlSeconds: 5 * 24 * 3600)

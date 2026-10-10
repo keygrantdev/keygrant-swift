@@ -77,31 +77,6 @@ func parseTrialBody(_ json: LicenseJSON?) -> TrialBody? {
     return TrialBody(trialStart: start, trialEndsAt: end, lease: json?["lease"]?.stringValue)
 }
 
-/// An answer to an ask for the key bought with a purchase secret (`claim`): what of each member
-/// it can use.
-struct ClaimBody: Sendable, Hashable {
-    var key: String?
-    var activationId: String?
-    var lease: String?
-    /// "Not bought yet": only a `pending` that is `true`.
-    var pending = false
-    /// The answer's error word: only a string of at least one character.
-    var error: String?
-}
-
-/// A claim's answer, keeping each member only when it is what it should be: the key, the
-/// activation id and the lease when they are strings, `pending` when it is `true`, the error when
-/// it is a word. Members it does not know are ignored, and a body that is not an object is nothing.
-func parseClaimBody(_ json: LicenseJSON?) -> ClaimBody {
-    ClaimBody(
-        key: json?["key"]?.stringValue,
-        activationId: json?["activationId"]?.stringValue,
-        lease: json?["lease"]?.stringValue,
-        pending: json?["pending"]?.boolValue == true,
-        error: nonEmpty(json?["error"]?.stringValue)
-    )
-}
-
 /// The smallest of the times given, or nil when none is.
 func earliest(_ values: Int?...) -> Int? {
     values.compactMap { $0 }.min()

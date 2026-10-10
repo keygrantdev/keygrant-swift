@@ -17,7 +17,7 @@ enum Waits {
 
 /// The major a build runs as: the configured one, read as the server reads a version (0.x as 1, and
 /// majors from 1 up). So a build configured as major 0 is major 1 everywhere the SDK uses the major
-/// (sent with an activation, a validate and a claim, and judged by `checkLease`, `keptWith`,
+/// (sent with an activation and a validate, and judged by `checkLease`, `keptWith`,
 /// `standingRefusal` and the renewal decisions), rather than refused offline as `outdated` by every
 /// lease. None configured is 1.
 func majorOf(_ configured: Int?) -> Int {
@@ -253,9 +253,6 @@ struct Basis: Sendable, Hashable {
     var about: About?
     /// The server's answer to a trial ask: stamped `trialAt`.
     var trial: Stamp?
-    /// A save about a purchase secret (its drop, or the wait after an ask for the key bought with
-    /// it): its purchase fields land only while it is about the stored one (`aboutStored`).
-    var purchase: PurchaseBasis?
 }
 
 /// What the answer to an ask writes: what the server said, and the wait before asking again.
@@ -322,10 +319,8 @@ private func outOfDate(_ latest: StoredState, _ basis: Basis) -> Superseded? {
 /// `merged`). Stamped: an answer or an activation with `verdictAt`, a trial answer with `trialAt`.
 /// A save about an activation no longer stored keeps only its trial evidence; an answer older than
 /// the stored one loses its verdict fields, as does an activation of the same seat; a trial answer
-/// older than the stored one loses its end and lease, taken together from the newest; a save about
-/// a purchase secret no longer stored (or, for a wait, one whose link was handed out again since)
-/// loses its purchase fields (`aboutStored`). The trial start only ever moves
-/// earlier, whoever saved it; the kept major of the stored activation only ever up (a
+/// older than the stored one loses its end and lease, taken together from the newest. The trial
+/// start only ever moves earlier, whoever saved it; the kept major of the stored activation only ever up (a
 /// deactivation, based on nothing, still clears it).
 func merged(_ latest: StoredState, _ patch: StatePatch, _ basis: Basis = Basis()) -> StoredState {
     let stamp = basis.answer ?? basis.activation
@@ -338,7 +333,6 @@ func merged(_ latest: StoredState, _ patch: StatePatch, _ basis: Basis = Basis()
     case nil: break
     }
     if let trial = basis.trial, outdated(latest.trialAt, trial) { applied = applied.omitting(trialAnswerFields) }
-    if let purchase = basis.purchase, !aboutStored(latest, purchase) { applied = applied.omitting(purchaseFields) }
     let trialStart = earliest(latest.trialStart, applied.int(.trialStart))
     var result = applied.applied(to: latest)
     if let trialStart { result.trialStart = trialStart }

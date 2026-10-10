@@ -186,7 +186,7 @@ extension License {
     }
 
     /// The ids of the keys this build carries (`kid`, each key's thumbprint), in the order
-    /// configured: sent with each activation, validate and claim, so the product's dashboard can
+    /// configured: sent with each activation and validate, so the product's dashboard can
     /// count the devices whose builds do not carry a key yet.
     var kidsJSON: LicenseJSON { .array(keys.kids.map(LicenseJSON.string)) }
 }

@@ -143,6 +143,27 @@ struct JSONEntryPointTests {
         #expect(fs.files.keys.contains { $0.hasSuffix(".corrupt") })
     }
 
+    @Test func neverReadsNorWritesBackAPurchaseSecretAnEarlierVersionStored() async throws {
+        let retired = #""purchaseToken":"q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c","purchaseTokenAt":1756913600000,"claimAskedAt":1756999940000"#
+        let fs = MemoryFileSystem([statePath: #"{"trialStart":1756740800000,"# + retired + #","later":{"n":1}}"#])
+        let storage = storage(fs)
+        let state = try #require(try await storage.read())
+        #expect(state == StoredState(trialStart: 1_756_740_800_000, otherFields: ["later": ["n": 1]]))
+        try await storage.write(state)
+        #expect(fs.files[statePath].flatMap(JSONText.parse) == ["trialStart": 1_756_740_800_000, "later": ["n": 1]])
+    }
+
+    @Test func neverWritesAPurchaseSecretSetAmongTheOtherFieldsByHand() {
+        let state = StoredState(
+            trialStart: 1_756_740_800_000,
+            otherFields: [
+                "purchaseToken": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c", "purchaseTokenAt": 1_756_913_600_000,
+                "claimAskedAt": 1_756_999_940_000, "later": ["n": 1],
+            ]
+        )
+        #expect(state.json == ["trialStart": 1_756_740_800_000, "later": ["n": 1]])
+    }
+
     @Test func writesBackANumberPastADoubleAsNullAsJSONStringifyDoes() async throws {
         let fs = MemoryFileSystem([statePath: #"{"key":"K","x":1e400}"#])
         let storage = storage(fs)

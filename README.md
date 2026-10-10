@@ -6,8 +6,7 @@ Electron SDK (`@keygrant/electron`), held to the same behaviour by the shared co
 
 A licence is proven to the app by a signed lease (a JWT, EdDSA over Ed25519) that the app checks
 **offline** against the product's public key. The app goes online only to activate, to renew a
-lease near or past its end, to tell the server it runs a newer major version, to pick up a key
-the customer bought from the app ([Buying from the app](#buying-from-the-app)), or, at most once
+lease near or past its end, to tell the server it runs a newer major version, or, at most once
 a day and in the background, to report a running trial's launch. Licensing fails
 in favour of the paying customer: an outage, no network, a 5xx, a 429, an ambiguous 4xx or an
 answer the SDK cannot use never takes away a lease that is still valid. Only an explicit verdict
@@ -24,7 +23,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.3.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.4.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -133,7 +132,6 @@ Every call is `async` and safe to call from any thread or actor.
 | `startTrial() async -> LicenseStatus` | never throws |
 | `deactivate() async throws -> DeactivateResult` | releases the seat and drops the local licence (trial evidence kept); `released` says whether the seat is free (below) |
 | `upgradeURL(paymentLink: URL) async -> URL?` | the payment link with this device's activation id as `client_reference_id` (never the key) |
-| `purchaseURL(paymentLink: URL) async throws -> URL?` | the payment link a customer with no key buys through, picked up by the app with nothing typed ([Buying from the app](#buying-from-the-app)); nil while a key is held |
 
 `deactivate()` drops the local licence whatever the server says, and answers `released: true`
 only when KeyGrant confirmed the release (a 200), or when this device held no activation to
@@ -167,7 +165,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 | `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)) |
 | `.trial` | | the app; `trialDaysLeft`, `trialEndsAt` (ms: the end the trial lease was signed to), `trialEndDate`, `entitlements` |
 | `.expired` | `.offline` | the lease ran out and the server could not be reached: "connect to renew" |
-| `.expired` | `.trial` | the trial is over: buy (`purchaseURL`) |
+| `.expired` | `.trial` | the trial is over: buy ([Buying from the app](#buying-from-the-app)) |
 | `.invalid` | `.revoked` | the key was revoked or has expired, or this device was released |
 | `.invalid` | `.upgrade` | this build is newer than the key covers: buy an upgrade (`upgradeURL`) |
 | `.invalid` | `.outdated` | this build is older than the key covers: update the app |
@@ -190,76 +188,22 @@ so a pasted key with a newline, or one typed in lower case, works.
 
 ## Buying from the app
 
-A customer on a trial (or with nothing yet) buys through `purchaseURL(paymentLink:)`, and the app
-picks the key up itself, for a product with "Converts in place" on: nothing to copy from an
-email, nothing to type. Add to the quick start's `Licensing`:
+Give a customer who holds no key a Buy button that opens your Stripe Payment Link. The checkout
+emails them their key, and they type it into the app. Add to the quick start's `Licensing`:
 
 ```swift
 /// The product's payment link, from the dashboard.
 private let paymentLink = URL(string: "https://buy.stripe.com/test_abc")!
-/// Whether a checkout this app opened may still be going on.
-private var checkoutOpened = false
 
-/// "Buy" on the trial or activation screen.
-func buy() async {
-    guard let license else { return }
-    do {
-        // nil while a key is held: an upgrade goes through `upgradeURL(paymentLink:)`.
-        if let url = try await license.purchaseURL(paymentLink: paymentLink) {
-            NSWorkspace.shared.open(url)
-            checkoutOpened = true
-        }
-    } catch {
-        // The state could not be saved just now (or the link is not an absolute URL): say so.
-    }
-}
-
-/// When the customer is back (the app comes to the front, say), and only while a checkout is
-/// open: `refresh()` on a licensed install validates online every time.
-func customerReturned() async {
-    guard let license, checkoutOpened, await license.status().state != .licensed else { return }
-    status = await license.refresh()  // `.licensed` once the checkout has gone through
-    if status?.state == .licensed { checkoutOpened = false }
+/// "Buy" on the trial or activation screen; then the customer enters the key from the email
+/// (`activate(_:)`).
+func buy() {
+    NSWorkspace.shared.open(paymentLink)
 }
 ```
 
-- **The link** carries a reference, `kgp_` and a hash of a one-time secret this install keeps:
-  256 random bits from the system's secure generator, never the device's fingerprint. The secret
-  stays on the device and is sent only when the app asks for the key, so a link that leaks
-  (browser history, a screenshot) claims nothing. It is made the first time, kept, and every later
-  call hands out the same secret's link, so the key bought through either link is picked up
-  (paying twice buys two keys; the second comes by email). The link's own parameters and fragment
-  are kept; a `client_reference_id` already on it is replaced.
-- **The pickup:** once the checkout has minted the key, `refresh()` or `startTrial()` asks for it
-  at once, activates this device on it exactly as `activate(_:)` would, and answers `.licensed`.
-  `status()` asks on its own too, at most once every 5 minutes for a day after the link, bounded
-  as any check it makes (5 s), so a customer who simply returns to the app finds it licensed;
-  after that day only `refresh()` and `startTrial()` ask, so an abandoned checkout costs no launch
-  a request. `status()` and `refresh()` ask only under the device's own fingerprint (a machine
-  whose id did not read this time is asked nothing, and asks at the next call); `startTrial()`,
-  which reads the device once for both its asks, may use the host name. Each ask also sends every
-  fingerprint the run read (the first four the server takes), so a key bought earlier is answered
-  again to this device even when it was read differently since. "Not bought yet", no
-  network, or a server that cannot say keeps the secret for the next ask; an answer that the key
-  will never come this way (another device took it, the product has "Converts in place" off, an
-  activation refused) lets the secret go, and the customer types the key from the delivery email
-  as before.
-- **The secret goes** once a key bought with it is picked up, when any key is activated here or
-  this device is deactivated, and 30 days after the last `purchaseURL(paymentLink:)`. Letting it
-  go is this device's alone: it revokes nothing on the server.
-- **It throws** `InvalidPaymentLink` for a link that is not an absolute URL (before anything is
-  read), the storage's error when the state cannot be read or the secret cannot be saved (a link
-  whose secret was not kept could never be picked up), and
-  `LicenseCallError.previousCallUnfinished` behind a call that has not finished while no secret
-  is held (one held gives its link as it is).
-- **Turn the product's "Converts in place" switch on** once your app uses
-  `purchaseURL(paymentLink:)`: it is off by default, and until it is on every pickup is refused
-  and the customer types the key from the delivery email. Know the trade before you do: whoever
-  opens a checkout owns its pickup. Your Payment Link is public, so anyone can add a
-  `client_reference_id` of their own to it and get buyers to pay through their copy of the link;
-  the key bought that way is picked up by the link's maker, not the buyer. A link from the app is
-  the buyer's own; a leaked one claims nothing, as it carries only a hash of the app's secret. A
-  planted pickup shows in the key's history, and you can free the seat for the buyer.
+For a customer who already holds a key, `upgradeURL(paymentLink:)` adds this install's activation to
+the link, so an upgrade sale finds the key it upgrades.
 
 ## Embedding the public keys
 
@@ -285,7 +229,7 @@ does not carry is refused (`.unknownKey`). When the product rotates its signing 
 *stages* the next key, published beside the current one while every lease is still signed with the
 current key. Ship builds carrying both; once they are out, the product *switches*, and those builds
 verify every lease signed after it. Embed the whole set each time you build. Each activation,
-validate and claim reports the ids of the keys the build carries (`kids`), so the dashboard can
+validate reports the ids of the keys the build carries (`kids`), so the dashboard can
 count the devices still on builds without the staged key before you switch.
 
 `License(_:)` checks the key at once and throws `LicenseConfigError` for one it cannot use. Read
@@ -452,8 +396,7 @@ app licensed offline, but activation answers `network`.
 
 `License` is a `Sendable` final class: create one and share it. Calls on one `License` run one at a
 time, so `status()` from several places at once asks the server once and never writes back a stale
-state. A call waits for the one before it, but at most that call's HTTP bound plus 15 seconds
-(plus 5 more after a `startTrial()`, which may ask twice: for a bought key, then for the trial);
+state. A call waits for the one before it, but at most that call's HTTP bound plus 15 seconds;
 then it runs read-only (`isStalled`). Every call runs in a task of its own: cancelling the task
 that awaits it (a SwiftUI `.task` whose view went away) does not cut a licence check, or its save,
 short; it finishes within its bounds. The file reads and writes run on a thread of their own at
@@ -490,8 +433,7 @@ Windows cases of `machineIds`, which pin `reg.exe` output parsing (this SDK has 
 and the `majors` with a fraction (marked `jsOnly`), which the reference's JavaScript number can hold
 and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). The
 decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
-`asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `claimOutcome`, `claimRequest`,
-`referencedLink` among them), and answers are compared exactly: text unit for unit, and in a patch a
+`asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink` among them), and answers are compared exactly: text unit for unit, and in a patch a
 field cleared (`null`) apart from one left alone (absent). Where this SDK differs from the reference
 Electron SDK, and why:
 
@@ -501,14 +443,10 @@ Electron SDK, and why:
   and answers `DeactivateResult` (`released`) as the reference's answers `{released}`; its
   result may be discarded.
 - **`upgradeURL(paymentLink:)`** takes a `URL` and answers nil when the state cannot be read just
-  now, or the link is not an absolute URL (the reference rejects both).
-- **`purchaseURL(paymentLink:)`** takes a `URL` and throws `InvalidPaymentLink` for one that is
-  not an absolute URL (the reference rejects with a `TypeError`). Both links are built by the
-  reference's one rule (`referencedLink`), but from the link as `URL` holds it: the reference's
-  URL parser writes a link in its normal form first (a lower-case scheme and host, a `/` for an
-  empty path), which this SDK leaves as given. The purchase secret comes from
-  `SystemRandomNumberGenerator` (`arc4random_buf` on Apple platforms, `getrandom` on Linux), the
-  reference's from Node's `randomBytes`.
+  now, or the link is not an absolute URL (the reference rejects both). The link is built by the
+  reference's rule (`referencedLink`), but from the link as `URL` holds it: the reference's URL
+  parser writes a link in its normal form first (a lower-case scheme and host, a `/` for an empty
+  path), which this SDK leaves as given.
 - **The launch report** is sent from a task of its own that nothing awaits (the reference's
   promise that nothing awaits); `status()` answers before its device read and its request.
 - **`License(_:)` throws `LicenseConfigError`** for a public key it cannot use, at once. The
