@@ -41,6 +41,10 @@ public struct StoredState: Sendable, Hashable {
     public var rev: Int?
     /// When (guarded device clock) a running trial last reported its launch: at most once a day.
     public var trialReportedAt: Int?
+    /// The stored offline licence file's token, as `License.importLicenseFile(_:)` stored it.
+    /// Verified again on every status, so an edit to it licenses nothing. Never a key file: importing
+    /// one activates its key.
+    public var licenseFile: String?
     /// Fields this SDK does not know (a newer SDK's), kept as they were.
     public var otherFields: [String: LicenseJSON]
 
@@ -64,6 +68,7 @@ public struct StoredState: Sendable, Hashable {
         verdictAt: Int? = nil,
         rev: Int? = nil,
         trialReportedAt: Int? = nil,
+        licenseFile: String? = nil,
         otherFields: [String: LicenseJSON] = [:]
     ) {
         self.key = key
@@ -85,6 +90,7 @@ public struct StoredState: Sendable, Hashable {
         self.verdictAt = verdictAt
         self.rev = rev
         self.trialReportedAt = trialReportedAt
+        self.licenseFile = licenseFile
         self.otherFields = otherFields
     }
 }
@@ -136,12 +142,12 @@ let retiredFields: Set<String> = ["purchaseToken", "purchaseTokenAt", "claimAske
 enum StateField: String, CaseIterable, Sendable {
     case key, activationId, lease, trialStart, trialEndsAt, trialLease, trialAt, lastSeen, checkedMajor
     case keptMajor, backoffSince, backoffMs, refused, refusedMajor, refusedFor, deviceKind, verdictAt, rev
-    case trialReportedAt
+    case trialReportedAt, licenseFile
 
     /// What a JSON value says of this field: nil when it is not of the field's type.
     func value(from json: LicenseJSON) -> StateValue? {
         switch self {
-        case .key, .activationId, .lease, .trialLease:
+        case .key, .activationId, .lease, .trialLease, .licenseFile:
             return json.stringValue.map(StateValue.string)
         case .refused:
             return json.stringValue.flatMap(Refusal.init(rawValue:)).map { .string($0.rawValue) }
@@ -211,6 +217,7 @@ extension StoredState {
             case .verdictAt: verdictAt.map(StateValue.int)
             case .rev: rev.map(StateValue.int)
             case .trialReportedAt: trialReportedAt.map(StateValue.int)
+            case .licenseFile: licenseFile.map(StateValue.string)
             }
         }
         set {
@@ -234,6 +241,7 @@ extension StoredState {
             case .verdictAt: verdictAt = newValue?.int
             case .rev: rev = newValue?.int
             case .trialReportedAt: trialReportedAt = newValue?.int
+            case .licenseFile: licenseFile = newValue?.string
             }
         }
     }

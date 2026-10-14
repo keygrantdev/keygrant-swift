@@ -95,6 +95,10 @@ extension License {
     /// The status, asking the server when it should. `readOnly` (behind a call that has not
     /// settled): from what is stored only, with no ask and no write.
     func statusNow(_ state: StoredState, force: Bool, readOnly: Bool) async -> LicenseStatus {
+        // A stored offline licence file that licenses this build wins, offline, with no ask and no
+        // write; one that does not answers only when no key path and no running trial does.
+        let file = fileStatus(state)
+        if let file, file.state == .licensed { return file }
         let now = effectiveNow(state)
         // A device refusal stands only for the device it was given for: who this is.
         var device: Device?
@@ -108,8 +112,15 @@ extension License {
         if nonEmpty(state.key) != nil, let lease = nonEmpty(state.lease) {
             return await licenseStatus(state, lease: lease, now: now, force: force, readOnly: readOnly)
         }
-        if state.trialStart != nil { return await trialStatus(state, now: now, ask: TrialAsk(force: force, readOnly: readOnly)) }
-        return LicenseStatus(state: .unlicensed)
+        return await trialOrFile(state, now: now, file: file, ask: TrialAsk(force: force, readOnly: readOnly))
+    }
+
+    /// With no key to answer: a trial this device started while it runs, else a stored file that
+    /// does not license this build (why is the news), else the trial that has ended, else unlicensed.
+    private func trialOrFile(_ state: StoredState, now: Int, file: LicenseStatus?, ask: TrialAsk) async -> LicenseStatus {
+        let trial = state.trialStart == nil ? nil : await trialStatus(state, now: now, ask: ask)
+        if let trial, trial.state == .trial { return trial }
+        return file ?? trial ?? LicenseStatus(state: .unlicensed)
     }
 
     /// `startTrial()`'s trial ask, the device read with an activation's time.

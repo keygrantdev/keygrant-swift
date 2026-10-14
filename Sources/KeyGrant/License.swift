@@ -17,6 +17,8 @@ public final class License: Sendable {
     let base: String
     /// The product's Ed25519 public keys, raw, with their ids.
     let keys: KeySet
+    /// The ids of licence files this build refuses.
+    let revokedFiles: [String]
     let httpTimeout: TimeInterval
     let deviceHold: Bool
     let deviceName: String?
@@ -42,6 +44,7 @@ public final class License: Sendable {
 
     init(_ config: LicenseConfig, timing: Timing) throws {
         keys = try KeySet(publicJWK: config.publicJWK)
+        revokedFiles = config.revokedLicenseFiles
         product = config.product
         // As the server reads it (`majorOf`): one reading, used wherever the major is.
         major = majorOf(config.major)
@@ -102,8 +105,9 @@ public final class License: Sendable {
 
     /// Whether the licence this device holds grants the entitlement `code`: a flag that is on, a
     /// number that is not zero, or a text that is not empty (`grants`). Offline, from the stored
-    /// lease only: the entitlements of the status `status()` gives from what is stored, with no ask
-    /// and no write, so a licence that does not license this build, and none at all, grant nothing.
+    /// lease or stored offline licence file only: the entitlements of the status `status()` gives
+    /// from what is stored, with no ask and no write, so a licence that does not license this
+    /// build, and none at all, grant nothing.
     /// A running trial grants what its trial lease does. A state that cannot be read grants nothing
     /// just now.
     public func has(_ code: String) async -> Bool {

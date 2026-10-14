@@ -163,10 +163,7 @@ func verifyLease(_ token: String, keys: KeySet, now: Int) -> VerifyResult {
     let candidates = keys.keys.filter { kid == nil || $0.kid == kid }
     if candidates.isEmpty { return .invalid(.unknownKey, nil) }
     let signed = Data("\(header).\(payload)".utf8)
-    let holds = candidates.contains { candidate in
-        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: candidate.key) else { return false }
-        return key.isValidSignature(signatureBytes, for: signed)
-    }
+    let holds = candidates.contains { $0.verifies(signatureBytes, for: signed) }
     guard holds else { return .invalid(.badSignature, nil) }
     // Decoded as TextDecoder does (an invalid byte sequence becomes U+FFFD, a byte-order mark is
     // dropped), then read as JSON.parse reads it.

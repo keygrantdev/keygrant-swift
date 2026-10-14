@@ -27,6 +27,10 @@ public struct LicenseConfig: Sendable {
     /// How long a request may take before the SDK abandons it, for every call that names no
     /// shorter bound of its own. Kept by the SDK whatever the HTTP adapter does with it.
     public var httpTimeout: TimeInterval
+    /// The ids of licence files this build refuses (a file's `fid`): how an app update stops an
+    /// offline licence file that leaked, since nothing else can. Matched exactly. A stored file listed
+    /// here reads as `.invalid`/`.revokedFile`; importing one is refused (`.revokedFile`).
+    public var revokedLicenseFiles: [String]
     /// Adapter overrides; any left nil uses the default.
     public var adapters: LicenseAdapters
 
@@ -38,6 +42,7 @@ public struct LicenseConfig: Sendable {
         deviceName: String? = nil,
         deviceHold: Bool = true,
         httpTimeout: TimeInterval = 15,
+        revokedLicenseFiles: [String] = [],
         adapters: LicenseAdapters = LicenseAdapters()
     ) {
         self.product = product
@@ -47,6 +52,7 @@ public struct LicenseConfig: Sendable {
         self.deviceName = deviceName
         self.deviceHold = deviceHold
         self.httpTimeout = httpTimeout
+        self.revokedLicenseFiles = revokedLicenseFiles
         self.adapters = adapters
     }
 }

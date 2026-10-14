@@ -173,7 +173,7 @@ extension License {
     }
 
     /// A validate's body: with every fingerprint this device answers to when it can tell, so the
-    /// server refuses a licence file copied from another machine; with none when it cannot.
+    /// server refuses a state file copied from another machine; with none when it cannot.
     func validateBody(_ state: StoredState, _ device: Device) -> LicenseJSON {
         var body: [String: LicenseJSON] = ["major": .number(Double(major))]
         if let key = state.key { body["key"] = .string(key) }

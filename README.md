@@ -23,7 +23,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.4.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.5.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -107,7 +107,7 @@ struct Root: View {
         } else {
             switch licensing.status?.state {
             case .licensed?, .trial?, .unknown?:
-                MainWindow()  // `.unknown`: the licence file could not be read just now. Keep running.
+                MainWindow()  // `.unknown`: the state file could not be read just now. Keep running.
             case .expired?, .invalid?, .unlicensed?:
                 ActivationView()  // say why from `status.reason` (below); offer activate / trial / buy
             case nil:
@@ -131,6 +131,8 @@ Every call is `async` and safe to call from any thread or actor.
 | `activate(_ key: String) async -> ActivateResult` | `.activated` or `.failed(LicenseError)`; never throws |
 | `startTrial() async -> LicenseStatus` | never throws |
 | `deactivate() async throws -> DeactivateResult` | releases the seat and drops the local licence (trial evidence kept); `released` says whether the seat is free (below) |
+| `importLicenseFile(_ content: Data) async throws -> ImportLicenseFileResult` | takes a licence file's content (or `String` text), verified offline: an offline file is stored and licenses the app with no network; a key file's key is activated as `activate(_:)` would ([Licence files](#licence-files-drag-and-drop)) |
+| `removeLicenseFile() async throws` | drops the stored offline licence file; a key the device holds keeps working |
 | `upgradeURL(paymentLink: URL) async -> URL?` | the payment link with this device's activation id as `client_reference_id` (never the key) |
 
 `deactivate()` drops the local licence whatever the server says, and answers `released: true`
@@ -156,24 +158,26 @@ the state cannot be saved (the local licence is kept then: call it again).
 | `deviceName` | nil | a label for the device list (cut to 120 UTF-16 units). On a Mac, `SCDynamicStoreCopyComputerName(nil, nil) as String?` gives "Rae's MacBook Pro" without the DNS lookup `Host.current()` makes |
 | `deviceHold` | `true` | below |
 | `httpTimeout` | 15 s | how long any one request may take; the SDK holds every request to it itself |
+| `revokedLicenseFiles` | `[]` | the ids of licence files this build refuses (an offline file that leaked), matched exactly |
 | `adapters` | defaults | `LicenseAdapters(storage:registry:clock:fingerprinter:http:)`, any nil for the default |
 
 ### Statuses
 
 | `state` | `reason` | What to show |
 |---|---|---|
-| `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)) |
+| `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)). With `source` `.file`, a stored offline licence file licenses it: show `licensedTo` |
 | `.trial` | | the app; `trialDaysLeft`, `trialEndsAt` (ms: the end the trial lease was signed to), `trialEndDate`, `entitlements` |
 | `.expired` | `.offline` | the lease ran out and the server could not be reached: "connect to renew" |
 | `.expired` | `.trial` | the trial is over: buy ([Buying from the app](#buying-from-the-app)) |
 | `.invalid` | `.revoked` | the key was revoked or has expired, or this device was released |
-| `.invalid` | `.upgrade` | this build is newer than the key covers: buy an upgrade (`upgradeURL`) |
-| `.invalid` | `.outdated` | this build is older than the key covers: update the app |
+| `.invalid` | `.upgrade` | this build is newer than the key covers: buy an upgrade (`upgradeURL`). From a licence file, newer than the file covers: a file (or a key) for this version |
+| `.invalid` | `.outdated` | this build is older than the key (or the file) covers: update the app |
 | `.invalid` | `.device` | the licence was activated on another device: activate again here |
-| `.invalid` | `.tampered` | the lease is not for this licence at all: activate again |
-| `.invalid` | `.unknownKey` | the lease is signed by a key this build does not carry; online, the server renews it with the key it signs with now. When it stays so online: update the app |
+| `.invalid` | `.tampered` | the lease is not for this licence at all: activate again. From a licence file, the stored file is not one (the state file was edited): import it again, or remove it |
+| `.invalid` | `.unknownKey` | the lease is signed by a key this build does not carry; online, the server renews it with the key it signs with now. When it stays so online: update the app. From a licence file, no renewal comes: update the app, or ask for the same licence's file signed again |
+| `.invalid` | `.revokedFile` | the stored offline licence file is one this build lists as revoked (`source` `.file`) |
 | `.unlicensed` | | nothing held: activate or start a trial |
-| `.unknown` | `.storage` | the licence file could not be read just now: keep running, ask again shortly; never show the activation screen for it |
+| `.unknown` | `.storage` | the state file could not be read just now: keep running, ask again shortly; never show the activation screen for it |
 
 `isStalled`: an earlier call on this `License` has not finished (a storage adapter stuck, say), so
 the answer comes from what is stored, with no ask and no write. A restart clears it.
@@ -182,9 +186,91 @@ the answer comes from what is stored, with no ask and no write. A restart clears
 
 `invalidKey` (no such key, or text that cannot be one), `limit` (on as many devices as it
 allows), `revoked`, `upgrade`, `outdated`, `network` (try again), `invalidLease` (the server's
-lease does not verify with the embedded key: a configuration error), and `storage` (the licence
+lease does not verify with the embedded key: a configuration error), and `storage` (the state
 file could not be read or saved: try again). The key is trimmed and upper-cased before it is sent,
 so a pasted key with a newline, or one typed in lower case, works.
+
+## Licence files: drag and drop
+
+A licence can come as a file (`.kglicense`) the customer drops onto the app or opens from its licence
+screen. A **key file** carries their key: importing it activates the key online, exactly as typing it
+would. An **offline licence file** licenses the app with no network at all, for good, on machines that
+never connect; it has no seat limit and cannot be revoked, so the only way to stop one that leaked is an
+app update that lists its id (`LicenseConfig(..., revokedLicenseFiles: ["lf_8Hq2"])`).
+
+```swift
+import SwiftUI
+import UniformTypeIdentifiers
+import KeyGrant
+
+let licenseFileType = UTType(filenameExtension: String(licenseFileExtension.dropFirst())) ?? .data
+
+struct LicenseScreen: View {
+    let license: License
+    @State private var choosing = false
+    @State private var message = ""
+
+    var body: some View {
+        VStack {
+            Text(message)
+            Button("Open license file...") { choosing = true }
+        }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [licenseFileType]) { result in
+            if case .success(let url) = result { Task { await importFile(at: url) } }
+        }
+        // macOS 13 and later; on macOS 12, `.onDrop(of: [.fileURL], ...)` gives the same URL.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { $0.pathExtension.lowercased() == "kglicense" }) else { return false }
+            Task { await importFile(at: url) }
+            return true
+        }
+    }
+
+    func importFile(at url: URL) async {
+        // A file the app was handed from outside its sandbox: read it while access is granted.
+        let granted = url.startAccessingSecurityScopedResource()
+        defer { if granted { url.stopAccessingSecurityScopedResource() } }
+        do {
+            // The content, never the path, and never more than a licence file can be: a larger one is
+            // refused unread past its bound.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let content = try handle.read(upToCount: maxLicenseFileBytes + 1) ?? Data()
+            switch try await license.importLicenseFile(content) {
+            case .imported(_, let licensedTo): message = "Licensed to \(licensedTo.name ?? licensedTo.email ?? "you")"
+            case .refused(let error): message = "This license file was not taken (\(error.rawValue))."
+            case .notActivated(let error): message = "The key in this file did not activate (\(error.rawValue))."
+            }
+        } catch {
+            // Unreadable, not saved, or a licence call still running: try again.
+            message = "Try again."
+        }
+    }
+}
+```
+
+`importLicenseFile(_:)` takes the file's content (`Data`, or a `String` for pasted text), never its path,
+and verifies it offline: signed by a key of `publicJWK`, for this product, and, for an offline file,
+covering this build's major. It answers `.imported(kind, licensedTo:)` (`kind` `.key` or `.offline`);
+`.refused(LicenseFileError)` (`.malformed`, `.notALicenseFile`, `.badSignature`, `.unknownKey`,
+`.wrongProduct`, `.revokedFile`, `.upgrade`, `.outdated`), nothing stored; or, for a key file whose key
+did not activate, `.notActivated(LicenseError)`, what `activate(_:)` answers. It throws
+`LicenseCallError.previousCallUnfinished` behind a call that has not finished, and the storage's error
+when the state cannot be read or the file (or a key file's activation) cannot be saved. `.unknownKey`
+means the file was signed by a key this build does not carry: a newer one, after the product rotated its
+key, which an update of the app carries. A key file's notes print its key, which can be typed meanwhile.
+
+An offline file is kept and checked again on every `status()`, which then answers `.licensed` with
+`source` `.file`, the `key`, `licensedTo` and the file's `entitlements`, never asking the server,
+`refresh()` included. Show "Licensed to Ada Lovelace" from `licensedTo`. A status from a file has no
+seat to deactivate: offer `removeLicenseFile()` instead (`deactivate()` leaves the file alone). If the
+device also holds a key, a file that covers this build wins, and the key keeps working once the file is
+removed, revoked or outgrown. A file that does not cover this build answers only when no key and no
+running trial does.
+
+**Keep every key that signed a file in your builds.** A file names the key that signed it and never
+expires, so a key that has signed one stays in the product's key set, and in `publicJWK`, after it stops
+signing leases. A build without it reads such a file as `.invalid` / `.unknownKey`.
 
 ## Buying from the app
 
@@ -293,8 +379,9 @@ let seats = status.entitlements["seats"]?.numberValue ?? 1
   The dictionary is the app's own copy: changing it changes nothing the SDK holds, nor the next
   status.
 - **When there are some:** on a `.licensed` status, from the licence's lease (offline, after an
-  activation, a renewal or a `refresh()`, and behind a call that has not finished), and on a
-  `.trial` status, from the trial's lease, when that lease grants at least one.
+  activation, a renewal or a `refresh()`, and behind a call that has not finished) or from a
+  stored offline licence file (its `ent`), and on a `.trial` status, from the trial's lease, when
+  that lease or file grants at least one.
 - **When it is empty:** on every other status (`.expired`, `.invalid` for any reason, a stored
   refusal included, `.unlicensed`, `.unknown`), and when the lease grants none, so a product that
   grants no entitlements sees no difference: a lookup reads nil either way.
@@ -311,9 +398,10 @@ try await license.require("export") // throws MissingEntitlement(entitlement: "e
 
 `has(_:)` is true for a flag that is on, a number that is not zero, or a text that is not empty;
 false for anything else, and for a code the lease does not grant (a dictionary key, so compared by
-canonical equivalence, as above). It is answered offline from the stored lease only, as `status()`
-would answer from what is stored, with no request and no write: a licence that does not license
-this build, or none at all, grants nothing; a running trial grants what its trial lease does.
+canonical equivalence, as above). It is answered offline from the stored lease or stored offline
+licence file only, as `status()` would answer from what is stored, with no request and no write: a
+licence that does not license this build, or none at all, grants nothing; a running trial grants
+what its trial lease does.
 `require(_:)` throws `MissingEntitlement`, naming the code, when `has(_:)` would be false.
 `grants(status.entitlements, code)` answers the same of a status already in hand.
 
@@ -433,15 +521,21 @@ Windows cases of `machineIds`, which pin `reg.exe` output parsing (this SDK has 
 and the `majors` with a fraction (marked `jsOnly`), which the reference's JavaScript number can hold
 and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). The
 decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
-`asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink` among them), and answers are compared exactly: text unit for unit, and in a patch a
-field cleared (`null`) apart from one left alone (absent). Where this SDK differs from the reference
-Electron SDK, and why:
+`asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink`, and for licence
+files `licenseFileToken`, `verifyLicenseFile`, `checkLicenseFile` and `licenseFileStatus` among
+them), and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
+apart from one left alone (absent). Where this SDK differs from the reference Electron SDK, and why:
 
 - **`activate(_:)` never throws.** When the state file cannot be read or saved, the reference
   rejects; this answers `.failed(.storage)` (a `LicenseError` case the reference does not have),
   so the app can say what is wrong and retry. `deactivate()` throws, as the reference's rejects,
   and answers `DeactivateResult` (`released`) as the reference's answers `{released}`; its
   result may be discarded.
+- **`importLicenseFile(_:)`** answers a refusal as `.refused` and a key file's failed activation as
+  `.notActivated`, where the reference resolves `{ ok: false, error }` with either word, and throws
+  where the reference rejects. A stored `licenseFile` that is not text is no file here (a field of the
+  wrong type is left out, as every field is), where the reference reads it as `.invalid`/`.tampered`:
+  either way it licenses nothing.
 - **`upgradeURL(paymentLink:)`** takes a `URL` and answers nil when the state cannot be read just
   now, or the link is not an absolute URL (the reference rejects both). The link is built by the
   reference's rule (`referencedLink`), but from the link as `URL` holds it: the reference's URL
@@ -482,7 +576,8 @@ Electron SDK, and why:
   way.
 - **JSON is read as `JSON.parse` reads it** (a server's body and a lease's payload decoded as
   `TextDecoder` decodes them, the state file as Node's `readFile` gives it), and written as
-  `JSON.stringify` writes it, but for what a Swift value cannot hold: an escaped lone surrogate
+  `JSON.stringify` writes it (a licence file's payload as a lease's is), but for what a Swift value
+  cannot hold: an escaped lone surrogate
   (`"\ud800"`) reads as U+FFFD; two member names that are only canonically equivalent (an "é"
   composed and one decomposed) are one member, with the last value (an entitlement's name never
   meets this: KeyGrant signs names only in NFC); nesting deeper than 1,000

@@ -98,7 +98,7 @@ struct StatusValueTests {
 
     @Test func namesItsStatesReasonsAndErrorsAsTheReferenceDoes() {
         #expect(LicenseState.allCases.map(\.rawValue) == ["licensed", "trial", "expired", "invalid", "unlicensed", "unknown"])
-        #expect(LicenseReason.allCases.map(\.rawValue) == ["revoked", "upgrade", "outdated", "offline", "tampered", "device", "trial", "storage", "unknown-key"])
+        #expect(LicenseReason.allCases.map(\.rawValue) == ["revoked", "upgrade", "outdated", "offline", "tampered", "device", "trial", "storage", "unknown-key", "revoked-file"])
         #expect(LicenseError.allCases.map(\.rawValue) == [
             "invalid-key", "limit", "revoked", "upgrade", "outdated", "network", "not-configured", "invalid-lease", "storage",
         ])

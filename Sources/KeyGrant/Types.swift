@@ -2,7 +2,8 @@ import Foundation
 
 /// What `status()` says of the licence.
 public enum LicenseState: String, Sendable, Hashable, CaseIterable {
-    /// A lease licenses this build on this device (`isTest` says whether it is a test licence).
+    /// A lease licenses this build on this device, or a stored offline licence file licenses this
+    /// build (`source` `.file`); `isTest` says whether it is a test licence.
     case licensed
     /// A trial is running (`trialEndsAt`, `trialDaysLeft`).
     case trial
@@ -12,7 +13,7 @@ public enum LicenseState: String, Sendable, Hashable, CaseIterable {
     case invalid
     /// Nothing is held: no licence and no trial.
     case unlicensed
-    /// The licence file could not be read just now (`reason` `.storage`, an antivirus scan holding
+    /// The state file could not be read just now (`reason` `.storage`, an antivirus scan holding
     /// it, say): nothing is known either way. Keep running as before and ask again shortly; never
     /// show the activation screen for it.
     case unknown
@@ -22,44 +23,54 @@ public enum LicenseState: String, Sendable, Hashable, CaseIterable {
 public enum LicenseReason: String, Sendable, Hashable, CaseIterable {
     /// The key was revoked or has expired, or this device's activation was released.
     case revoked
-    /// The build is NEWER than the key covers: buy an upgrade.
+    /// The build is NEWER than the key (or, from a licence file, the file) covers: buy an upgrade.
     case upgrade
-    /// The build is OLDER than the key's lowest version: update the app.
+    /// The build is OLDER than the key's (or, from a licence file, the file's) lowest version:
+    /// update the app.
     case outdated
     /// The lease ran out and the server could not be reached to renew it.
     case offline
-    /// The lease is not for this licence at all (another key or activation, another product, a bad signature).
+    /// The lease is not for this licence at all (another key or activation, another product, a bad
+    /// signature), or the stored licence file is not one (the state file was edited).
     case tampered
     /// The licence was activated on another device: activate again on this one.
     case device
     /// The trial has ended.
     case trial
-    /// The licence file could not be read just now (state `.unknown`).
+    /// The state file could not be read just now (state `.unknown`).
     case storage
     /// The lease is signed by a key this build does not carry (`LicenseConfig.publicJWK`). Asked
     /// online, the server signs one with the key it uses now, which a build carrying that key verifies.
+    /// A stored licence file signed by such a key needs the app's update that carries it, or the same
+    /// licence's file signed again.
     case unknownKey = "unknown-key"
+    /// The stored offline licence file is one this build lists as revoked
+    /// (`LicenseConfig.revokedLicenseFiles`).
+    case revokedFile = "revoked-file"
 }
 
 /// What `status()`, `refresh()` and `startTrial()` answer.
 public struct LicenseStatus: Sendable, Hashable {
     public var state: LicenseState
     public var reason: LicenseReason?
-    /// The licence key, when the status is about one.
+    /// The licence key, when the status is about one; on a status from a licence file that is
+    /// `.licensed`, or `.invalid` with `.revokedFile`, `.upgrade` or `.outdated`, the key the file
+    /// records.
     public var key: String?
     /// Whole days left of the trial, rounded up.
     public var trialDaysLeft: Int?
     /// When the trial ends, in milliseconds since 1970 (the server's word). See `trialEndDate`.
     public var trialEndsAt: Int?
     /// A TEST licence: one the developer made to exercise their app, which lapses on its own
-    /// within 30 days. It licenses the app like any other; check this to refuse test licences in
-    /// a release build.
+    /// within 30 days (an offline licence file made for one never does: it is a file). It
+    /// licenses the app like any other; check this to refuse test licences in a release build.
     public var isTest: Bool
     /// What the licence grants beyond the base product, by name, as its lease signs them (the
     /// `ent` claim): `status.entitlements["edition"] == .string("pro")`. On a `.licensed` status,
-    /// from the licence's lease; on a `.trial` status, from the trial's. Empty on every other
-    /// status (an `.invalid` one included, whatever the lease held grants), and when the lease
-    /// grants none. A malformed member of the claim is left out, and never costs the licence.
+    /// from the licence's lease, or the stored offline licence file's `ent`; on a `.trial`
+    /// status, from the trial's. Empty on every other status (an `.invalid` one included,
+    /// whatever the lease held grants), and when the lease grants none. A malformed member of the
+    /// claim is left out, and never costs the licence.
     ///
     /// Names are dictionary keys, which Swift compares by canonical equivalence (an "é" composed
     /// and one decomposed are one key); KeyGrant signs names only in Unicode's composed form (NFC),
@@ -72,6 +83,12 @@ public struct LicenseStatus: Sendable, Hashable {
     /// An earlier call on this `License` has not finished (a storage adapter stuck, say), so this
     /// answer comes from what is stored, with no ask and no write. A restart clears it.
     public var isStalled: Bool
+    /// `.file` when the status rests on a stored offline licence file (`License.importLicenseFile(_:)`),
+    /// licensed or not; nil for a key's lease, a trial and no licence.
+    public var source: LicenseSource?
+    /// Who the stored offline licence file is licensed to, on a file status that is `.licensed`, or
+    /// `.invalid` with `.revokedFile`, `.upgrade` or `.outdated`; nil otherwise.
+    public var licensedTo: LicensedTo?
 
     public init(
         state: LicenseState,
@@ -81,7 +98,9 @@ public struct LicenseStatus: Sendable, Hashable {
         trialEndsAt: Int? = nil,
         isTest: Bool = false,
         entitlements: [String: Entitlement] = [:],
-        isStalled: Bool = false
+        isStalled: Bool = false,
+        source: LicenseSource? = nil,
+        licensedTo: LicensedTo? = nil
     ) {
         self.state = state
         self.reason = reason
@@ -91,6 +110,8 @@ public struct LicenseStatus: Sendable, Hashable {
         self.isTest = isTest
         self.entitlements = entitlements
         self.isStalled = isStalled
+        self.source = source
+        self.licensedTo = licensedTo
     }
 
     /// `trialEndsAt` as a `Date`.
@@ -198,7 +219,7 @@ public enum LicenseError: String, Error, Sendable, Hashable, CaseIterable {
     /// The server's lease failed offline verification: an integrity or configuration error
     /// (the embedded public key is not the product's, say).
     case invalidLease = "invalid-lease"
-    /// The licence file could not be read or saved: try again. (The reference rejects instead.)
+    /// The state file could not be read or saved: try again. (The reference rejects instead.)
     case storage
 }
 
@@ -262,8 +283,8 @@ public struct DeviceIdentity: Sendable, Hashable {
 
 /// Why a `License` call could not run.
 public enum LicenseCallError: Error, Sendable, Hashable, CustomStringConvertible {
-    /// `deactivate()` behind a call that has not finished: the local licence cannot be dropped
-    /// safely until it has. Try again.
+    /// `deactivate()`, `importLicenseFile(_:)` or `removeLicenseFile()` behind a call that has not
+    /// finished: nothing may be written until it has. Try again.
     case previousCallUnfinished
 
     public var description: String {

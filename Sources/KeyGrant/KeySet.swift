@@ -3,13 +3,17 @@ import Foundation
 
 // The product's public keys: the set a build carries, each key's id, and the key a lease names.
 
+/// What a lease's header is, up to the key id it names.
+let leaseHeaderStart = #"{"alg":"EdDSA","typ":"JWT","kid":""#
+
 /// The key a lease's header names (`kid`), or nil when it names none. A header names a key only when
 /// it is, byte for byte, the header the server writes for one: canonical base64url of
 /// `{"alg":"EdDSA","typ":"JWT","kid":"<kid>"}`, `<kid>` 1 to 64 characters of the base64url alphabet.
-/// Any other header names no key. It is matched as bytes, never parsed.
-func keyId(ofHeader header: String) -> String? {
+/// Any other header names no key. It is matched as bytes, never parsed. A licence file's header is
+/// matched the same way from its own start (`licenseFileHeaderStart`).
+func keyId(ofHeader header: String, start startText: String = leaseHeaderStart) -> String? {
     guard let bytes = canonicalBase64URLDecode(header) else { return nil }
-    let start = Array(#"{"alg":"EdDSA","typ":"JWT","kid":""#.utf8)
+    let start = Array(startText.utf8)
     let end = Array(#""}"#.utf8)
     let all = Array(bytes)
     guard all.count >= start.count + end.count, all.starts(with: start), all.suffix(end.count).elementsEqual(end) else { return nil }
@@ -36,6 +40,13 @@ struct KeySet: Sendable, Hashable {
     struct Key: Sendable, Hashable {
         var kid: String
         var key: Data
+
+        /// Whether `signature` is this key's Ed25519 signature over `signed`. Bytes that are not
+        /// a point on the curve, and a signature of any length but 64 bytes, verify nothing.
+        func verifies(_ signature: Data, for signed: Data) -> Bool {
+            guard signature.count == 64, let key = try? Curve25519.Signing.PublicKey(rawRepresentation: key) else { return false }
+            return key.isValidSignature(signature, for: signed)
+        }
     }
 
     let keys: [Key]
@@ -77,6 +88,13 @@ struct KeySet: Sendable, Hashable {
 
     /// The ids of its keys, in its order: what a check-in reports as `kids`.
     var kids: [String] { keys.map(\.kid) }
+
+    /// Whether the set holds a key whose id is `kid` (matched exactly) and `signature` is its
+    /// Ed25519 signature of 64 bytes over `signed`; nil when the set holds no such key. Only that key
+    /// is tried.
+    func signedByNamed(_ kid: String, signature: Data, signed: Data) -> Bool? {
+        keys.first(where: { $0.kid == kid })?.verifies(signature, for: signed)
+    }
 }
 
 /// The raw Ed25519 key a product's public JWK holds (or its bare `x`), checked as every KeyGrant SDK

@@ -40,8 +40,8 @@ struct ConformanceTests {
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 40 && total == 703 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions == 690)
+        #expect(groups.count == 43 && total == 798 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions == 785)
     }
 
     static let answered: Set<String> = [
@@ -54,6 +54,8 @@ struct ConformanceTests {
         "majors", "referencedLinks", "trialReportDue",
         // Added with key sets and the entitlement helpers (ConformanceKeyTests.swift).
         "keyIds", "keySets", "grants",
+        // The licence-file groups (ConformanceFileTests.swift).
+        "licenseFileContainers", "licenseFiles", "filesAsLeases",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the
@@ -97,6 +99,7 @@ struct ConformanceTests {
             "UPDATE_ATTEMPTS": .number(Double(updateAttempts)),
             "UNKNOWN_HOST": .string(unknownHost),
             "TRIAL_REPORT_MS": .number(Double(Waits.trialReportMs)),
+            "MAX_LICENSE_FILE_BYTES": .number(Double(maxLicenseFileBytes)),
         ]
         #expect(constants == .object(ours))
     }
@@ -618,6 +621,13 @@ extension LicenseStatus {
         if isTest { members["test"] = true }
         if !entitlements.isEmpty { members["entitlements"] = .object(entitlements.mapValues(\.json)) }
         if isStalled { members["stalled"] = true }
+        if let source { members["source"] = .string(source.rawValue) }
+        if let licensedTo {
+            var to: [String: LicenseJSON] = [:]
+            if let name = licensedTo.name { to["name"] = .string(name) }
+            if let email = licensedTo.email { to["email"] = .string(email) }
+            members["licensedTo"] = .object(to)
+        }
         return .object(members)
     }
 }

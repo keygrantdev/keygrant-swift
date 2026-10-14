@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+- Licence files: `License.importLicenseFile(_:)` takes a `.kglicense` file's content (`Data`, or a `String`;
+  never a path) and verifies it offline. A key file activates its key, as `activate(_:)` would. An offline
+  licence file is stored and licenses the app with no network, ever: `status()` answers it with `source`
+  `.file` and `licensedTo`, before any key or trial, and `refresh()` asks nothing for it. It answers
+  `ImportLicenseFileResult` (`.imported`, `.refused(LicenseFileError)`, `.notActivated(LicenseError)`) and
+  throws behind a call that has not finished, or when the state cannot be read or saved.
+  `removeLicenseFile()` drops it; `deactivate()` leaves it.
+- `LicenseConfig.revokedLicenseFiles` lists the ids of files this build refuses: a stored one reads as
+  `.invalid` with the new reason `.revokedFile`. A `switch` over every `LicenseReason` has one more case.
+- `LicenseStatus` has `source` and `licensedTo` (nil on every status not from a file); `StoredState` has
+  `licenseFile`, the stored offline file's token. `licenseFileExtension`, `licenseFileMediaType` and
+  `maxLicenseFileBytes` give the format; `LicenseFileKind`, `LicenseFileError`, `LicenseSource` and
+  `LicensedTo` are new. `LicenseCallError.previousCallUnfinished` is also what `importLicenseFile(_:)` and
+  `removeLicenseFile()` throw behind a call that has not finished.
+
 ## 0.4.0
 
 - `License.purchaseURL(paymentLink:)` and `InvalidPaymentLink` are removed, and the SDK no longer asks for
