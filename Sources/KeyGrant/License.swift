@@ -71,13 +71,22 @@ public final class License: Sendable {
     // MARK: - the public API
 
     /// Activate a licence key on this device. The key is trimmed and upper-cased first.
-    public func activate(_ key: String) async -> ActivateResult {
+    ///
+    /// A user-locked key asks a NEW device who it is, and only a new device: `email` is the address
+    /// the key was sold to and, for a key that mails a code to it, `code` is the code that came.
+    /// The first activation of such a key is answered `.userEmailRequired`; with the address,
+    /// `.userCodeRequired` (a code was just mailed) or a lease; with the code, a lease. Neither is
+    /// stored. A key that is not locked ignores both once they reach the server, but an address
+    /// longer than any email, or a code that is not six digits (its spaces dropped), is refused here
+    /// for any key (`.userEmailMismatch`, `.userCodeInvalid`), asking nothing: the key is judged
+    /// first, then the address, then the code. A blank is none.
+    public func activate(_ key: String, email: String? = nil, code: String? = nil) async -> ActivateResult {
         do {
             return try await calls.runThrowing { readOnly in
                 // Behind a call that has not settled nothing may be written: answered as not
                 // reaching the server, to retry.
                 if readOnly { return .failed(.network) }
-                return try await self.activateNow(key)
+                return try await self.activateNow(key, email: email, code: code)
             }
         } catch {
             // The state could not be read or saved (the reference rejects): try again.

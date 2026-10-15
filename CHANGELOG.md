@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+- User-locked keys: `License.activate(_:email:code:)` and `License.importLicenseFile(_:email:code:)`. A
+  licence model can let only the person a key was sold to activate a new device on it, known by the
+  address on the key (`email`), and, for a key that mails a code to that address, by the code too
+  (`code`). Both are optional and default to nil, so every existing call is as it was and sends neither.
+  Only a new device is ever asked: `refresh()`, `status()`, a renewal, a seat the key already holds and
+  offline behaviour are unchanged. Nothing about the address or the code is stored.
+- `LicenseError` has seven more cases, the refusals an app can act on: `.userEmailRequired` (ask for the
+  address), `.userEmailMismatch`, `.userCodeRequired` (a code was just mailed: ask for it),
+  `.userCodeInvalid`, `.tooManyCodes`, `.tooManyAttempts` and `.tryAgain` (the code could not be sent:
+  nothing was activated, ask again). Their raw values are the server's words (`user-email-required`, ...).
+  A `switch` over every `LicenseError` has seven more cases.
+- An address longer than 254 UTF-16 units, or a code that is not exactly six ASCII digits (spaces inside
+  it are dropped first), is refused by the SDK itself, for any key, before the server is asked
+  (`.userEmailMismatch`, `.userCodeInvalid`). The conformance vectors' two new groups, `typedFor` and
+  `userLockErrors`, hold this to the reference.
+
 ## 0.5.0
 
 - Licence files: `License.importLicenseFile(_:)` takes a `.kglicense` file's content (`Data`, or a `String`;

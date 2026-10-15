@@ -15,16 +15,21 @@ extension License {
     /// Throws `LicenseCallError.previousCallUnfinished` behind a call that has not finished, and the
     /// storage's error when the state cannot be read or the file (or a key file's activation) cannot
     /// be saved: the customer asked, and can try again.
-    public func importLicenseFile(_ content: Data) async throws -> ImportLicenseFileResult {
+    ///
+    /// `email` and `code` are what a person typed for a user-locked key, passed on to a key file's
+    /// activation exactly as `activate(_:email:code:)` takes them. An offline file ignores them, and
+    /// a file that is no licence file is refused before any key is asked for.
+    public func importLicenseFile(_ content: Data, email: String? = nil, code: String? = nil) async throws -> ImportLicenseFileResult {
         try await calls.runThrowing { readOnly in
             if readOnly { throw LicenseCallError.previousCallUnfinished }
-            return try await self.importNow(content)
+            return try await self.importNow(content, email: email, code: code)
         }
     }
 
-    /// `importLicenseFile(_:)` for a file's content as text (pasted, say), read as its UTF-8 bytes.
-    public func importLicenseFile(_ text: String) async throws -> ImportLicenseFileResult {
-        try await importLicenseFile(Data(text.utf8))
+    /// `importLicenseFile(_:email:code:)` for a file's content as text (pasted, say), read as its
+    /// UTF-8 bytes.
+    public func importLicenseFile(_ text: String, email: String? = nil, code: String? = nil) async throws -> ImportLicenseFileResult {
+        try await importLicenseFile(Data(text.utf8), email: email, code: code)
     }
 
     /// Drop the stored offline licence file, if there is one; a key this device holds keeps working.
@@ -39,13 +44,13 @@ extension License {
         }
     }
 
-    private func importNow(_ content: Data) async throws -> ImportLicenseFileResult {
+    private func importNow(_ content: Data, email: String?, code: String?) async throws -> ImportLicenseFileResult {
         guard let token = licenseFileToken(content) else { return .refused(.malformed) }
         switch checkFile(token) {
         case .refused(let error, _):
             return .refused(error)
         case .taken(let claims) where claims.kind == .key:
-            let activated = try await activateNow(claims.sub)
+            let activated = try await activateNow(claims.sub, email: email, code: code)
             if let error = activated.error { return .notActivated(error) }
             return .imported(.key, licensedTo: claims.licensedTo)
         case .taken(let claims):

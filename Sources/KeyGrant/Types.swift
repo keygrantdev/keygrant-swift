@@ -219,6 +219,23 @@ public enum LicenseError: String, Error, Sendable, Hashable, CaseIterable {
     /// The server's lease failed offline verification: an integrity or configuration error
     /// (the embedded public key is not the product's, say).
     case invalidLease = "invalid-lease"
+    /// A user-locked key asks a NEW device who it is. Ask the person for the address the key was
+    /// sold to and `activate(_:email:code:)` again with it.
+    case userEmailRequired = "user-email-required"
+    /// Not the key's address (or longer than any); nothing is said of the real one: ask again.
+    case userEmailMismatch = "user-email-mismatch"
+    /// A code was just mailed to that address: ask for it and activate again with the address and
+    /// the code.
+    case userCodeRequired = "user-code-required"
+    /// The code is wrong, expired, used or not six digits: ask again, or activate with the address
+    /// alone for a new one.
+    case userCodeInvalid = "user-code-invalid"
+    /// Three codes were sent for the key this hour: wait, or use the code sent.
+    case tooManyCodes = "too-many-codes"
+    /// Too many wrong addresses or codes for the key this hour: try again later.
+    case tooManyAttempts = "too-many-attempts"
+    /// The code could not be sent just now and nothing was activated: try again.
+    case tryAgain = "try-again"
     /// The state file could not be read or saved: try again. (The reference rejects instead.)
     case storage
 }

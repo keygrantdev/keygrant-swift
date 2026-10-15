@@ -16,8 +16,49 @@ func mapServerError(_ error: String?) -> LicenseError {
     case "revoked", "expired": .revoked
     case "upgrade-required": .upgrade
     case "update-required": .outdated
+    // A user-locked key's new device: each word is its own error.
+    case "user-email-required": .userEmailRequired
+    case "user-email-mismatch": .userEmailMismatch
+    case "user-code-required": .userCodeRequired
+    case "user-code-invalid": .userCodeInvalid
+    case "too-many-codes": .tooManyCodes
+    case "too-many-attempts": .tooManyAttempts
+    case "try-again": .tryAgain
     default: .network
     }
+}
+
+/// The longest address the endpoint takes; a longer one is no key's address.
+let maxEmail = 254
+/// How many digits a code has.
+private let codeDigits = 6
+
+/// What an activation sends for what a person typed for a user-locked key, or the error that
+/// refuses it before anything is sent.
+enum Typed: Sendable, Hashable {
+    /// The address and the code, each only when there is one.
+    case send(email: String?, code: String?)
+    case refused(LicenseError)
+}
+
+/// What an activation sends for the address and code a person typed, or the error that refuses
+/// them first: an address longer than any is `.userEmailMismatch`, a code that is not six digits
+/// `.userCodeInvalid`; the address is judged first.
+func typedFor(email: String?, code: String?) -> Typed {
+    // The address, trimmed as a key is: a blank is none, and a longer one can match no key's
+    // address. The server compares it without regard to case, so it is sent as typed.
+    let enteredEmail = email.map(jsTrim) ?? ""
+    if enteredEmail.utf16.count > maxEmail { return .refused(.userEmailMismatch) }
+    // The code, its ends trimmed as a key's are and then its spaces (U+0020) dropped, since a code
+    // read off an email is typed as 123 456 as often as 123456: exactly six ASCII digits, else
+    // refused. Judged by scalars, so no grapheme cluster hides a space or a digit.
+    let spaced = (code.map(jsTrim) ?? "").unicodeScalars
+    let enteredCode = String(String.UnicodeScalarView(spaced.filter { $0 != " " }))
+    let digits = enteredCode.unicodeScalars
+    if !digits.isEmpty && !(digits.count == codeDigits && digits.allSatisfy { (0x30...0x39).contains($0.value) }) {
+        return .refused(.userCodeInvalid)
+    }
+    return .send(email: enteredEmail.isEmpty ? nil : enteredEmail, code: enteredCode.isEmpty ? nil : enteredCode)
 }
 
 /// The definitive refusal a validate's error word is, or nil for any other word, which is never

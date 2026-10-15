@@ -17,9 +17,13 @@ extension License {
         if await saveBestEffort(pending.patch, basis: pending.basis) { unsavedTrial.withValue { $0 = nil } }
     }
 
-    func activateNow(_ key: String) async throws -> ActivateResult {
+    func activateNow(_ key: String, email: String? = nil, code: String? = nil) async throws -> ActivateResult {
         // Normalised, and refused here when it cannot be a key.
         guard let entered = enteredKey(key) else { return .failed(.invalidKey) }
+        // What a person typed for a user-locked key: one that can be no address, or no code, is
+        // refused here, before anything is asked of the server or its wrong tries are spent.
+        let typed = typedFor(email: email, code: code)
+        if case .refused(let error) = typed { return .failed(error) }
         // Install memory protects the seat this install holds: re-activating that key keeps to
         // it; a first activation, or another key's, starts afresh.
         let stored = try await load()
@@ -36,6 +40,10 @@ extension License {
         if let kind = identity.kind { body["fingerprintKind"] = .string(kind.rawValue) }
         if let deviceName { body["name"] = .string(deviceName) }
         body["kids"] = kidsJSON
+        if case .send(let typedEmail, let typedCode) = typed {
+            if let typedEmail { body["email"] = .string(typedEmail) }
+            if let typedCode { body["code"] = .string(typedCode) }
+        }
         let response: LicenseHTTPResponse
         do {
             response = try await post("activate", .object(body))

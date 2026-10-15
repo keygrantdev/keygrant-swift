@@ -23,7 +23,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.5.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.6.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -128,10 +128,10 @@ Every call is `async` and safe to call from any thread or actor.
 | `License(_ config:) throws` | throws `LicenseConfigError` only for a public key it cannot use |
 | `status(forceOnline: Bool = false) async -> LicenseStatus` | never throws |
 | `refresh() async -> LicenseStatus` | `status()` forced online: call it when the customer says they have paid, or on a "Try again" |
-| `activate(_ key: String) async -> ActivateResult` | `.activated` or `.failed(LicenseError)`; never throws |
+| `activate(_ key: String, email: String? = nil, code: String? = nil) async -> ActivateResult` | `.activated` or `.failed(LicenseError)`; never throws. `email` and `code` are what a person typed for a user-locked key ([User-locked keys](#user-locked-keys)) |
 | `startTrial() async -> LicenseStatus` | never throws |
 | `deactivate() async throws -> DeactivateResult` | releases the seat and drops the local licence (trial evidence kept); `released` says whether the seat is free (below) |
-| `importLicenseFile(_ content: Data) async throws -> ImportLicenseFileResult` | takes a licence file's content (or `String` text), verified offline: an offline file is stored and licenses the app with no network; a key file's key is activated as `activate(_:)` would ([Licence files](#licence-files-drag-and-drop)) |
+| `importLicenseFile(_ content: Data, email: String? = nil, code: String? = nil) async throws -> ImportLicenseFileResult` | takes a licence file's content (or `String` text), verified offline: an offline file is stored and licenses the app with no network; a key file's key is activated as `activate(_:email:code:)` would, with the same `email` and `code` ([Licence files](#licence-files-drag-and-drop)) |
 | `removeLicenseFile() async throws` | drops the stored offline licence file; a key the device holds keeps working |
 | `upgradeURL(paymentLink: URL) async -> URL?` | the payment link with this device's activation id as `client_reference_id` (never the key) |
 
@@ -186,9 +186,10 @@ the answer comes from what is stored, with no ask and no write. A restart clears
 
 `invalidKey` (no such key, or text that cannot be one), `limit` (on as many devices as it
 allows), `revoked`, `upgrade`, `outdated`, `network` (try again), `invalidLease` (the server's
-lease does not verify with the embedded key: a configuration error), and `storage` (the state
-file could not be read or saved: try again). The key is trimmed and upper-cased before it is sent,
-so a pasted key with a newline, or one typed in lower case, works.
+lease does not verify with the embedded key: a configuration error), the seven errors of a
+user-locked key ([below](#user-locked-keys)), and `storage` (the state file could not be read or
+saved: try again). The key is trimmed and upper-cased before it is sent, so a pasted key with a
+newline, or one typed in lower case, works.
 
 ## Licence files: drag and drop
 
@@ -271,6 +272,51 @@ running trial does.
 **Keep every key that signed a file in your builds.** A file names the key that signed it and never
 expires, so a key that has signed one stays in the product's key set, and in `publicJWK`, after it stops
 signing leases. A build without it reads such a file as `.invalid` / `.unknownKey`.
+
+## User-locked keys
+
+A licence model can let only the person a key was sold to activate a NEW device on it: the activation
+names the address on the key and, for a key that mails a code to that address, the code too. Only a
+new device is ever asked; `status()`, `refresh()`, a renewal, a seat the key already holds and
+everything offline are as they were, so an app that is activated keeps running through a KeyGrant or
+mail outage.
+
+`activate(_:email:code:)` carries what the person typed (each is optional, and neither is ever stored):
+
+```swift
+switch await license.activate(key, email: emailField, code: codeField) {
+case .activated:
+    break
+case .failed(.userEmailRequired), .failed(.userEmailMismatch):
+    askForTheAddress()      // then activate again with it
+case .failed(.userCodeRequired), .failed(.userCodeInvalid):
+    askForTheCode()         // a code was just mailed to the address
+case .failed(.tooManyCodes), .failed(.tooManyAttempts):
+    askToTryLater()
+case .failed(.tryAgain):
+    askToRetry()            // nothing was activated
+case .failed:
+    showTheOtherErrors()
+}
+```
+
+| `LicenseError` | Means | The app |
+|---|---|---|
+| `userEmailRequired` | the key is locked and no address came | ask for the address |
+| `userEmailMismatch` | not the key's address (nothing is said of the real one) | ask again |
+| `userCodeRequired` | the address was right and a code was just mailed to it | ask for the code |
+| `userCodeInvalid` | the code is wrong, expired (10 minutes) or used, or the key's codes are void for the hour after five wrong ones | ask again, or activate with the address alone for a new code |
+| `tooManyCodes` | three codes were mailed for the key this hour | wait, or use the code sent |
+| `tooManyAttempts` | ten wrong addresses this hour, or the key's codes void | try again later |
+| `tryAgain` | the code could not be mailed: nothing was activated | retry; the one error here that is nobody's mistake |
+
+The address is trimmed (it is compared without regard to case) and a blank is none. The code has its
+ends trimmed and its spaces dropped (`123 456` is `123456`), and must be exactly six ASCII digits. An
+address longer than 254 UTF-16 units, or a code that is not six digits, answers `userEmailMismatch` or
+`userCodeInvalid` at once, for any key, asking the server nothing and so costing the key none of its
+wrong tries; the key is judged first, then the address, then the code. A key that is not locked ignores
+both once they reach the server. `importLicenseFile(_:email:code:)` passes them on to a key file's key.
+`deactivate()`, `refresh()` and `startTrial()` take neither.
 
 ## Buying from the app
 
@@ -522,8 +568,8 @@ and the `majors` with a fraction (marked `jsOnly`), which the reference's JavaSc
 and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). The
 decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
 `asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink`, and for licence
-files `licenseFileToken`, `verifyLicenseFile`, `checkLicenseFile` and `licenseFileStatus` among
-them), and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
+files `licenseFileToken`, `verifyLicenseFile`, `checkLicenseFile` and `licenseFileStatus`, and for a
+user-locked key `typedFor`, among them), and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
 apart from one left alone (absent). Where this SDK differs from the reference Electron SDK, and why:
 
 - **`activate(_:)` never throws.** When the state file cannot be read or saved, the reference
@@ -531,6 +577,9 @@ apart from one left alone (absent). Where this SDK differs from the reference El
   so the app can say what is wrong and retry. `deactivate()` throws, as the reference's rejects,
   and answers `DeactivateResult` (`released`) as the reference's answers `{released}`; its
   result may be discarded.
+- **`activate(_:email:code:)` and `importLicenseFile(_:email:code:)`** take the address and code as
+  two labelled parameters that default to nil, where the reference takes an options object; a code is
+  text here, where the reference also reads a code kept as a number.
 - **`importLicenseFile(_:)`** answers a refusal as `.refused` and a key file's failed activation as
   `.notActivated`, where the reference resolves `{ ok: false, error }` with either word, and throws
   where the reference rejects. A stored `licenseFile` that is not text is no file here (a field of the

@@ -40,8 +40,8 @@ struct ConformanceTests {
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 43 && total == 798 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions == 785)
+        #expect(groups.count == 45 && total == 865 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions == 852)
     }
 
     static let answered: Set<String> = [
@@ -56,6 +56,8 @@ struct ConformanceTests {
         "keyIds", "keySets", "grants",
         // The licence-file groups (ConformanceFileTests.swift).
         "licenseFileContainers", "licenseFiles", "filesAsLeases",
+        // The user-lock groups (ConformanceUserLockTests.swift).
+        "typedFor", "userLockErrors",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the

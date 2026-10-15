@@ -100,7 +100,9 @@ struct StatusValueTests {
         #expect(LicenseState.allCases.map(\.rawValue) == ["licensed", "trial", "expired", "invalid", "unlicensed", "unknown"])
         #expect(LicenseReason.allCases.map(\.rawValue) == ["revoked", "upgrade", "outdated", "offline", "tampered", "device", "trial", "storage", "unknown-key", "revoked-file"])
         #expect(LicenseError.allCases.map(\.rawValue) == [
-            "invalid-key", "limit", "revoked", "upgrade", "outdated", "network", "not-configured", "invalid-lease", "storage",
+            "invalid-key", "limit", "revoked", "upgrade", "outdated", "network", "not-configured", "invalid-lease",
+            "user-email-required", "user-email-mismatch", "user-code-required", "user-code-invalid", "too-many-codes",
+            "too-many-attempts", "try-again", "storage",
         ])
         #expect(ActivateResult.failed(.limit).error == .limit && !ActivateResult.failed(.limit).isActivated)
         #expect(ActivateResult.activated.isActivated && ActivateResult.activated.error == nil)
