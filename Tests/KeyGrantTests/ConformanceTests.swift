@@ -28,20 +28,21 @@ struct ConformanceTests {
     @Test func theFileIsTheOneThisSuiteReads() throws {
         let file = try #require(Self.file)
         let groups = (file.objectValue ?? [:]).filter { $0.value.arrayValue != nil && $0.key != "conventions" }
-        // Every group in the file has a test below; a new group fails here until it does.
+        // Every group in the file has a test; a new group fails here until it does.
         #expect(Set(groups.keys) == Self.answered)
         let key = try KeySet(publicJWK: try #require(file["publicJwk"]).jsonText)
         #expect(key.keys.count == 1 && key.keys[0].key.count == 32)
         // What the README says this suite replays: every vector but the Windows reads of the
-        // machine id (`machineIds`), which this SDK, with no Windows reader, does not make, and
-        // the majors with a fraction, which `LicenseConfig.major` (an `Int`) cannot hold (`majors`).
+        // machine id (`machineIds`), which this SDK, with no Windows reader, does not make, the
+        // majors with a fraction, which `LicenseConfig.major` (an `Int`) cannot hold (`majors`), and
+        // the two amounts only JavaScript can hold (`useAmounts`).
         let total = groups.values.reduce(0) { $0 + ($1.arrayValue?.count ?? 0) }
         let windows = try group("machineIds").filter { $0["source"]?["platform"] == "win32" }.count
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 45 && total == 865 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions == 852)
+        #expect(groups.count == 57 && total == 1277 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions - MeterVectors.jsOnly == 1262)
     }
 
     static let answered: Set<String> = [
@@ -58,6 +59,9 @@ struct ConformanceTests {
         "licenseFileContainers", "licenseFiles", "filesAsLeases",
         // The user-lock groups (ConformanceUserLockTests.swift).
         "typedFor", "userLockErrors",
+        // The metered-uses groups (ConformanceMeterTests.swift).
+        "meterClaims", "meterLeases", "useAmounts", "meterFigures", "meterStatuses", "offlineSpends", "useAsks",
+        "syncAsks", "useOutcomes", "journals", "spendReports", "spendConfirmations",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the
@@ -82,7 +86,7 @@ struct ConformanceTests {
 
     @Test func constants() throws {
         let constants = try #require(Self.file?["constants"])
-        let ours: [String: LicenseJSON] = [
+        var ours: [String: LicenseJSON] = [
             "OPEN_MAJOR": .number(Double(openMajor)),
             "ASK_AGAIN_MS": .number(Double(Waits.askAgainMs)),
             "RETRY_UNANSWERED_MS": .number(Double(Waits.retryUnansweredMs)),
@@ -103,6 +107,8 @@ struct ConformanceTests {
             "TRIAL_REPORT_MS": .number(Double(Waits.trialReportMs)),
             "MAX_LICENSE_FILE_BYTES": .number(Double(maxLicenseFileBytes)),
         ]
+        // The metered-uses constants close this block, as their groups close the file (ConformanceMeterTests.swift).
+        ours.merge(MeterVectors.constants) { _, meter in meter }
         #expect(constants == .object(ours))
     }
 

@@ -2,7 +2,9 @@ import Foundation
 
 /// Client-side licensing for a desktop app. Verifies signed JWT leases OFFLINE and only contacts
 /// the server to activate, to renew a lease nearing its end or past it, to tell it of a newer
-/// major, or (at most once a day, in the background) to report a running trial's launch: so an outage, no network, a 5xx, a 429, an
+/// major, to spend a metered use (`use(_:_:)`) or report the uses this device spent while it
+/// got no answer, or (at most once a day, in the background) to report a running trial's
+/// launch: so an outage, no network, a 5xx, a 429, an
 /// ambiguous 4xx or an unusable answer never locks out a paying customer while their lease is
 /// valid. Only an explicit verdict from the server, or the lease's own end, does.
 ///
@@ -32,6 +34,9 @@ public final class License: Sendable {
     /// The server's trial when it could not be saved (`startTrial`), kept for this process: merged
     /// into every state a status reads, and saved by the next call that can.
     let unsavedTrial = Locked<UnsavedTrial?>(nil)
+    /// The journal changes this process could not save (`License+Journal.swift`): merged into every
+    /// state a call reads, and saved by the next call that can.
+    let held = Locked<Held>(Held())
     /// The launch report last sent (`reportLaunch`), which the SDK itself never awaits: kept so a
     /// test can wait for it (`launchReportSettled`).
     let launchReport = Locked<Task<Void, Never>?>(nil)
@@ -96,18 +101,23 @@ public final class License: Sendable {
 
     /// The licence's status. Offline-first: it asks the server only when the lease nears its end
     /// or has ended, when a refusal is due to be asked again, when this build is a newer major than
-    /// the server last heard on an open lease, when a trial's lease does not verify while the trial
+    /// the server last heard on an open lease, when the journal of metered uses this device spent
+    /// without an answer holds an entry a request would report (and the journal's own wait is not
+    /// running), when a trial's lease does not verify while the trial
     /// is stored as still running (a lease signed before the product's key was rotated, say), or
     /// when `forceOnline`; each at most once per wait unless forced. A running
     /// trial also reports its launch, at most once a day, in the background: the answer never
     /// waits for it. Never throws.
     public func status(forceOnline: Bool = false) async -> LicenseStatus {
         await calls.run { readOnly in
-            if !readOnly { await self.saveUnsavedTrial() }
-            guard let state = await self.loadForStatus(readOnly: readOnly) else {
+            if !readOnly {
+                await self.saveUnsavedTrial()
+                await self.saveUnsavedJournal()
+            }
+            guard let view = await self.loadForStatus(readOnly: readOnly) else {
                 return readOnly ? LicenseStatus.unreadable.stalled() : .unreadable
             }
-            let status = await self.statusNow(state, force: forceOnline, readOnly: readOnly)
+            let status = await self.statusNow(view, force: forceOnline, readOnly: readOnly)
             return readOnly ? status.stalled() : status
         }
     }
@@ -120,8 +130,8 @@ public final class License: Sendable {
     /// A running trial grants what its trial lease does. A state that cannot be read grants nothing
     /// just now.
     public func has(_ code: String) async -> Bool {
-        guard let state = await loadForStatus(readOnly: true) else { return false }
-        return grants(await statusNow(state, force: false, readOnly: true).entitlements, code)
+        guard let view = await loadForStatus(readOnly: true) else { return false }
+        return grants(await statusNow(view, force: false, readOnly: true).entitlements, code)
     }
 
     /// As `has(_:)`, but throwing `MissingEntitlement`, which names `code`, when the licence does not
@@ -157,7 +167,7 @@ public final class License: Sendable {
     /// state cannot be read, and the server's trial when it cannot be saved. Never throws.
     public func startTrial() async -> LicenseStatus {
         await calls.run { readOnly in
-            guard let state = await self.loadForStatus(readOnly: readOnly) else {
+            guard let state = await self.loadForStatus(readOnly: readOnly)?.state else {
                 return readOnly ? LicenseStatus.unreadable.stalled() : .unreadable
             }
             if !readOnly { return await self.startTrialNow(state) }
@@ -173,7 +183,7 @@ public final class License: Sendable {
     /// (`referencedLink`).
     public func upgradeURL(paymentLink: URL) async -> URL? {
         // Read-only: this runs outside the one-at-a-time order, beside any call.
-        guard let state = try? await load(readOnly: true), nonEmpty(state.key) != nil,
+        guard let state = try? await load(readOnly: true).state, nonEmpty(state.key) != nil,
             let activationId = nonEmpty(state.activationId)
         else { return nil }
         return referencedLink(paymentLink, activationId)

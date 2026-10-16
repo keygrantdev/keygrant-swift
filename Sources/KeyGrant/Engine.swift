@@ -55,23 +55,14 @@ extension License {
         deviceHold ? stored : nil
     }
 
-    /// The stored state; `readOnly` behind a call that has not finished, so the read writes nothing either.
-    func load(readOnly: Bool = false) async throws -> StoredState {
-        try await storage.read(readOnly: readOnly) ?? StoredState()
-    }
-
     /// Persist a patch onto the state as it is stored NOW, through the storage's `update`, which
     /// merges it again onto a state another process saved meanwhile; with the latest time seen
     /// (`savedLastSeen`): the guard advanced, or brought back on the server's evidence
     /// (`guardTime`). What the patch is (`basis`) decides what of it lands on a state another
-    /// process changed (`merged`).
+    /// process changed (`merged`). The journal changes this process could not save before land with
+    /// it (`saveWith`).
     func save(_ patch: StatePatch, guardTime: Int? = nil, basis: Basis = Basis()) async throws {
-        let clock = self.clock
-        try await storage.update { latest in
-            var next = merged(latest, patch, basis)
-            next.lastSeen = savedLastSeen(stored: latest.lastSeen, clockNow: clampToSafe(clock.now()), guard: guardTime)
-            return next
-        }
+        try await saveWith(patch, guardTime: guardTime, basis: basis, ops: [])
     }
 
     /// A save for `status()` and `startTrial()`, whose failure fails nothing: the answer stands.
@@ -96,7 +87,7 @@ extension License {
     func serverNow(
         _ lease: String, key: String, activationId: String, save: (StatePatch, Int) async throws -> Void
     ) async throws -> Int {
-        let stored = try await load()
+        let stored = try await load().state
         let now = effectiveNow(stored)
         let signed = verify(lease, now: now).claims.map { SignedAt(sub: $0.sub, aid: $0.aid, iat: $0.iat) }
         let heldIat = nonEmpty(stored.lease).flatMap { verify($0, now: now).claims?.iat }
@@ -109,8 +100,8 @@ extension License {
     }
 
     /// An online validate: a status on a definitive answer, else nil.
-    func tryRenew(_ state: StoredState, timeout: TimeInterval? = nil) async -> LicenseStatus? {
-        if case .answered(let status) = await renew(state, timeout: timeout) { return status }
+    func tryRenew(_ view: LoadedState, timeout: TimeInterval? = nil) async -> LicenseStatus? {
+        if case .answered(let status) = await renew(view, timeout: timeout) { return status }
         return nil
     }
 
@@ -119,15 +110,25 @@ extension License {
     /// ask that came back without a lease starts the wait before the SDK asks again on its own: a
     /// minute when nothing answered at all, an hour when the server did (a refusal, a 5xx, a 429,
     /// an answer it could not use).
-    func renew(_ state: StoredState, timeout: TimeInterval? = nil) async -> Renewal {
+    ///
+    /// The request carries the journal of this device's unsynced spends (`spends`), and the entries
+    /// the answer names as recorded are dropped from it with the rest of what the answer saves; a
+    /// save that fails keeps that in memory (`saveOps`), and the entries are reported again, which
+    /// the server counts once. An answer that confirms none of what the request reported (the server
+    /// could not record it) starts the wait of an answer without a lease, so a journal the server
+    /// will not take is not offered at every `status()`. A licensed answer's status shows the key's
+    /// meters (`meteredStatus`).
+    func renew(_ view: LoadedState, timeout: TimeInterval? = nil) async -> Renewal {
+        let state = view.state
         // The wait runs on the device clock; the answer is stamped by the guarded one.
         let askedAt = clockNow()
         let asked = Asked(at: effectiveNow(state), activationId: state.activationId, seen: state.verdictAt)
         // A machine id read here keys this install from now on, written with whatever this ask writes.
         let device = await self.device(timing.machineId, installKind: state.deviceKind)
+        let reports = spendsReported(await reportable(view))
         let response: LicenseHTTPResponse?
         do {
-            response = try await post("validate", validateBody(state, device), timeout: timeout)
+            response = try await post("validate", validateBody(state, device, reports: reports), timeout: timeout)
         } catch {
             response = nil
         }
@@ -138,9 +139,24 @@ extension License {
                 key: state.key, keptMajor: state.keptMajor, device: device
             )
         )
-        // Saved as the answer to its ask; a save that fails leaves the answer standing.
-        _ = await saveBestEffort(outcome.patch, basis: Basis(answer: asked))
-        return outcome.answered ? .answered(outcome.status) : .unanswered
+        let ops = confirmations(state, response)
+        var patch = outcome.patch
+        if reports != nil, let response, !noAnswer(response.status), ops.isEmpty {
+            patch = patch + [.backoffSince: .int(askedAt), .backoffMs: .int(Waits.askAgainMs)]
+        }
+        // Saved as the answer to its ask; a save that fails leaves the answer standing, and keeps
+        // what it confirmed in memory.
+        await saveOps(state, patch, Basis(answer: asked), ops)
+        guard outcome.answered else { return .unanswered }
+        return .answered(metered(outcome.status, check: judged.check, state: state, ops: ops))
+    }
+
+    /// A licensed answer's status with the meters of the lease that brought it, net of the journal as
+    /// the answer left it.
+    private func metered(_ status: LicenseStatus?, check: LeaseCheck?, state: StoredState, ops: [JournalOp]) -> LicenseStatus? {
+        guard let status, case .ok(_, let claims)? = check else { return status }
+        let landed = landJournal(state, ops, now: guardedNow(clockNow(), state.lastSeen)).state
+        return meteredStatus(status, claims: claims, state: landed)
     }
 
     /// The lease a validate's 200 carried, checked on this device (`evaluate`) as of the server's
@@ -172,17 +188,35 @@ extension License {
         return (check, now)
     }
 
-    /// A validate's body: with every fingerprint this device answers to when it can tell, so the
-    /// server refuses a state file copied from another machine; with none when it cannot.
-    func validateBody(_ state: StoredState, _ device: Device) -> LicenseJSON {
+    /// What a validate and a `use` both send for the server's device check: the key, the seat, the
+    /// major, and every fingerprint this device answers to when it can tell (so the server refuses a
+    /// state file copied from another machine before it touches the seat), none when it cannot (so a
+    /// slow read never costs an honest device its renewal).
+    func deviceBody(_ state: StoredState, _ device: Device) -> [String: LicenseJSON] {
         var body: [String: LicenseJSON] = ["major": .number(Double(major))]
         if let key = state.key { body["key"] = .string(key) }
         if let activationId = state.activationId { body["activationId"] = .string(activationId) }
-        if let kept = state.keptMajor { body["keptMajor"] = .number(Double(kept)) }
         if device.canTell { body["fingerprints"] = .array(device.fingerprints.map(LicenseJSON.string)) }
         if device.canTell, let kind = device.kind { body["fingerprintKind"] = .string(kind.rawValue) }
+        return body
+    }
+
+    /// A validate's body: the device check, the kept major, the journal's report when there is one,
+    /// and the key ids.
+    func validateBody(_ state: StoredState, _ device: Device, reports: LicenseJSON? = nil) -> LicenseJSON {
+        var body = deviceBody(state, device)
+        if let kept = state.keptMajor { body["keptMajor"] = .number(Double(kept)) }
+        if let reports { body["spends"] = reports }
         body["kids"] = kidsJSON
         return .object(body)
+    }
+
+    /// The journal change an answer's confirmations make, about the activation it was asked for: none
+    /// when it named none.
+    func confirmations(_ state: StoredState, _ response: LicenseHTTPResponse?) -> [JournalOp] {
+        let entries = spendsConfirmed(response)
+        guard !entries.isEmpty, let about = state.activationId else { return [] }
+        return [.confirmed(about: about, entries: entries)]
     }
 
     /// The ids of the keys this build carries (`kid`, each key's thumbprint), in the order

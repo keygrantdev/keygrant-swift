@@ -54,6 +54,37 @@ struct URLSessionHTTPTests {
         server.stop()
         await #expect(throws: (any Error).self) { _ = try await URLSessionHTTP().post(url, body: [:], timeout: 2) }
     }
+
+    /// A `use` answer whose body carries a figure out of a double's range (`1e400`, infinity in JSON.parse).
+    static let hugeAnswer =
+        #"{"spent":true,"meters":{"huge":{"left":1e400,"total":10,"offline":1},"exports":{"left":1,"total":10,"offline":1}},"at":"#
+        + "\(NOW + 5_000)}"
+
+    @Test func readsAnAnswerWithANumberOutOfADoublesRangeAsAnAnswerAndDropsOnlyItsMeter() async throws {
+        let server = try LocalServer { _ in response(200, Self.hugeAnswer) }
+        defer { server.stop() }
+        let url = try #require(URL(string: "http://127.0.0.1:\(server.port)/v1/products/sluice/use"))
+        let answer = try await URLSessionHTTP().post(url, body: [:], timeout: 5)
+        #expect(answer.status == 200 && answer.json != nil)
+        let outcome = useOutcome(UseInput(response: answer, askedAt: NOW, major: 1, device: deviceOf(kind: nil, ownClaim: nil)))
+        #expect(outcome.kind == .spent)
+        #expect(outcome.figures.keys.sorted() == ["exports"])
+    }
+
+    @Test func spendsOnAnAnswerWithANumberOutOfADoublesRangeThroughTheRealAdapter() async throws {
+        let server = try LocalServer { _ in response(200, Self.hugeAnswer) }
+        defer { server.stop() }
+        let h = try Harness.holding()
+        let license = try License(
+            LicenseConfig(
+                product: PRODUCT, apiBaseURL: try #require(URL(string: "http://127.0.0.1:\(server.port)")), publicJWK: h.signer.publicJWK,
+                adapters: LicenseAdapters(storage: h.storage, clock: h.clock, fingerprinter: h.fingerprinter)
+            )
+        )
+        // The figure the answer gave is the one the customer is told: the meter beside the huge one was read.
+        #expect(await license.use("exports", 1) == .spent(left: 1))
+        #expect(h.stored?.meterFigures?.keys.sorted() == ["exports"])
+    }
 }
 
 private func response(_ status: Int, _ body: String, type: String = "application/json") -> String {

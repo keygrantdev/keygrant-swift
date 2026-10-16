@@ -110,12 +110,14 @@ private func leaseOutcome(_ input: RenewalInput, _ response: LicenseHTTPResponse
 /// out. A newer major than the server last heard, on an open lease (`major >= openMajor`; else it
 /// might not hear of it until the key's upgrade window has closed), or a lease nearing its end
 /// (`renewsEarly`, by the guarded clock `now`), renewed early so it rarely runs out while the
-/// device is offline. And only once the wait after the last ask is over (`askDue`, by the device
-/// clock `clockNow`). The ask is bounded (`statusCheckTimeout`) and the valid lease is the answer
-/// when it gets no verdict.
+/// device is offline; or the journal of unsynced spends (`state.spends`, the journal a request would
+/// report) holds an entry whose own wait is not running (`journalAsks`), so a device back online
+/// reports at its next status and its allowance comes back. And only once the wait after the last ask
+/// is over (`askDue`, by the device clock `clockNow`). The ask is bounded (`statusCheckTimeout`) and
+/// the valid lease is the answer when it gets no verdict.
 func asksOnValidLease(claims: LeaseClaims, state: StoredState, major: Int, now: Int, clockNow: Int) -> Bool {
     let newMajor = claims.major >= Double(openMajor) && major > (state.checkedMajor ?? 0)
-    let due = newMajor || renewsEarly(claims, now: now)
+    let due = newMajor || renewsEarly(claims, now: now) || journalAsks(state.spends ?? [], now: now)
     return due && askDue(state, clockNow: clockNow, force: false)
 }
 

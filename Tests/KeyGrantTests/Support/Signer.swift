@@ -73,7 +73,9 @@ struct Signer: Sendable {
     }
 
     /// A trial lease as the server signs one: `sub` `trial:<claim>`, `aid` the claim.
-    func trialLease(device: String, kind: DeviceKind? = .machine, ttlSeconds: Int = 7 * 24 * 3600, at: Int = NOW) -> String {
+    func trialLease(
+        device: String, kind: DeviceKind? = .machine, ttlSeconds: Int = 7 * 24 * 3600, at: Int = NOW, met: LicenseJSON? = nil
+    ) -> String {
         let claim = fingerprintClaim(device)
         let iat = at / 1000
         var claims: [String: LicenseJSON] = [
@@ -82,6 +84,7 @@ struct Signer: Sendable {
             "iat": .number(Double(iat)), "exp": .number(Double(iat + ttlSeconds)),
         ]
         if let kind { claims["fpk"] = .string(kind.rawValue) }
+        if let met { claims["met"] = met }
         return sign(payload: .object(claims))
     }
 

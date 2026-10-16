@@ -6,9 +6,10 @@ Electron SDK (`@keygrant/electron`), held to the same behaviour by the shared co
 
 A licence is proven to the app by a signed lease (a JWT, EdDSA over Ed25519) that the app checks
 **offline** against the product's public key. The app goes online only to activate, to renew a
-lease near or past its end, to tell the server it runs a newer major version, or, at most once
-a day and in the background, to report a running trial's launch. Licensing fails
-in favour of the paying customer: an outage, no network, a 5xx, a 429, an ambiguous 4xx or an
+lease near or past its end, to tell the server it runs a newer major version, to spend a metered
+use or report the uses the device spent while it got no answer (with its next `status()`, validate
+or `deactivate()`), or, at most once a day and in the background, to report a running trial's launch.
+Licensing fails in favour of the paying customer: an outage, no network, a 5xx, a 429, an ambiguous 4xx or an
 answer the SDK cannot use never takes away a lease that is still valid. Only an explicit verdict
 from the server, or the lease's own end, does.
 
@@ -23,7 +24,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.6.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.7.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -133,6 +134,7 @@ Every call is `async` and safe to call from any thread or actor.
 | `deactivate() async throws -> DeactivateResult` | releases the seat and drops the local licence (trial evidence kept); `released` says whether the seat is free (below) |
 | `importLicenseFile(_ content: Data, email: String? = nil, code: String? = nil) async throws -> ImportLicenseFileResult` | takes a licence file's content (or `String` text), verified offline: an offline file is stored and licenses the app with no network; a key file's key is activated as `activate(_:email:code:)` would, with the same `email` and `code` ([Licence files](#licence-files-drag-and-drop)) |
 | `removeLicenseFile() async throws` | drops the stored offline licence file; a key the device holds keeps working |
+| `use(_ meter: String, _ n: Int = 1) async -> UseResult` | spends `n` uses of a meter the key's licence model counts, exact online and from an offline allowance with no answer; never throws. `UseResult { ok, left, offline, error }` ([Metered uses](#metered-uses-counting-what-a-key-may-do)) |
 | `upgradeURL(paymentLink: URL) async -> URL?` | the payment link with this device's activation id as `client_reference_id` (never the key) |
 
 `deactivate()` drops the local licence whatever the server says, and answers `released: true`
@@ -165,7 +167,7 @@ the state cannot be saved (the local licence is kept then: call it again).
 
 | `state` | `reason` | What to show |
 |---|---|---|
-| `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)). With `source` `.file`, a stored offline licence file licenses it: show `licensedTo` |
+| `.licensed` | | the app. `isTest`: a TEST licence (refuse it in a release build if you like); `entitlements`: what it grants ([Entitlements](#entitlements)); `meters`: what it counts ([Metered uses](#metered-uses-counting-what-a-key-may-do)). With `source` `.file`, a stored offline licence file licenses it: show `licensedTo` |
 | `.trial` | | the app; `trialDaysLeft`, `trialEndsAt` (ms: the end the trial lease was signed to), `trialEndDate`, `entitlements` |
 | `.expired` | `.offline` | the lease ran out and the server could not be reached: "connect to renew" |
 | `.expired` | `.trial` | the trial is over: buy ([Buying from the app](#buying-from-the-app)) |
@@ -451,6 +453,69 @@ what its trial lease does.
 `require(_:)` throws `MissingEntitlement`, naming the code, when `has(_:)` would be false.
 `grants(status.entitlements, code)` answers the same of a status already in hand.
 
+## Metered uses: counting what a key may do
+
+A licence model can count uses of what it sells: 1,000 exports for good, or 50 renders each billing
+period. The app spends them with `use(_:_:)`, before the work they count, and does the work only when
+the spend is `ok`:
+
+```swift
+let spent = await license.use("exports")  // use("exports", 40) spends forty at once, whole or none
+if spent.ok {
+    runExport()  // spent.left: what is left now, net of this device's unsynced spends
+} else {
+    switch spent.error {
+    case .usedUp?:
+        offerMoreExports(left: spent.left)  // the server's word: fewer left than asked (nil when it gave no number)
+    case .offlineLimit?:
+        askToConnect()  // KeyGrant could not be reached, and this is past what this device may spend without it
+    default:
+        showMeterProblem(spent.error)  // .noMeter, .notLicensed, .revoked, .device, .upgrade, .outdated, .storage, .invalidAmount
+    }
+}
+
+let status = await license.status()  // offline, from the lease
+status.meters["exports"]  // MeterStatus(left: 950, total: 1000, offline: 100, unsynced: 0, resets: false)
+```
+
+- **Online it is exact.** The server takes `n` only while the meter has room for all of it. Two calls are
+  two spends; the SDK's own retries and reports never count one twice.
+- **With no answer it spends from an allowance.** No network, a timeout, a 5xx, a 429 or an answer the SDK
+  cannot use: the device spends from its offline allowance for that meter (set on the licence model; a
+  tenth of the meter by default, 0 for online only), never past what it last heard is left, answers
+  `offline: true`, and reports the spend with its next request. Past either, `.offlineLimit`. A spend the
+  allowance would refuse asks the server first, whatever the last outage left behind, so a customer who is
+  back online is not refused for it (once a minute while KeyGrant stays out of reach); one the allowance
+  covers is not asked again for a minute after an outage, growing to an hour. The unsynced spends are kept
+  with the licence (`StoredState.spends`), so they survive a restart and a second instance of the app, and
+  a spend the SDK cannot save yet is kept in memory: the customer always gets the use they were told they
+  had, and it is reported once it has been saved. A `status()` on a valid lease reports the journal too,
+  once its own wait is over, so a device back online gives its allowance back.
+- **It needs a key's lease** that licenses this build on this device (`.notLicensed` otherwise, without
+  asking). A device trial and an offline licence file have no meters.
+- **`deactivate()` clears the unsynced spends with the licence.** It sends them with the release (and the
+  device's fingerprints, so the server holds them to the seat's device), but clears them locally even when
+  KeyGrant could not be reached (`released` is then false), so what the server did not hear is lost: at
+  most the offline allowance of each meter. Activating another seat drops the old seat's spends unreported
+  the same way.
+- **It never throws for an outcome**: every one is in the `UseResult`, behind a call that has not finished
+  too (nothing is then saved: an offline spend is kept in memory and saved by the next call that can), and
+  a state that cannot be read just now is `.storage`. A `use` request waits at most 5 seconds for the server
+  (less when `httpTimeout` is shorter). Calls on one `License` run one at a time, this one among them, and a
+  call whose task is cancelled still runs to its bounded answer, as every call does: a spend that was made
+  is the customer's, so read the result even from a task you cancelled.
+- **`n` is an `Int`**: anything outside 1 to `maxMeterUses` (1,000,000,000) is `.invalidAmount`, and a meter
+  code that is not 1 to 32 UTF-16 units is `.noMeter`, both without asking anything. A code is matched
+  exactly, case included, as an entitlement's is (see the note on dictionary keys under
+  [Entitlements](#entitlements)).
+- **`status.meters`** is there on a `.licensed` status from a key's lease that names meters, and empty on
+  every other status: `left` is net of this device's unsynced spends, `total` is what the key holds (for
+  good, or this period), `offline` is this device's allowance, `unsynced` what it has spent and not reported,
+  and `resets` is true for a meter that comes back each billing period.
+- **A meter never takes the licence away.** Nothing reads one to decide whether the app is licensed: a meter
+  that is used up refuses spends, never the app.
+- An app built with an SDK from before meters licenses a metered key as any other and cannot spend.
+
 ## Where the state is kept
 
 One JSON file per product, per user, on this machine:
@@ -478,7 +543,10 @@ older path the first time.
 
 A custom `StorageAdapter` (the Keychain, say) implements `read(readOnly:)`, which must write
 nothing at all when `readOnly` is true, and `write(_:)`; `update(_:)` is optional (the default
-reads, merges and writes). Encode `StoredState` with `JSONEncoder`/`JSONDecoder`.
+reads, merges and writes). Encode `StoredState` with `JSONEncoder`/`JSONDecoder`. The journal of unsynced
+[metered](#metered-uses-counting-what-a-key-may-do) spends (`spends`) and the newest figures a spend was
+answered with (`meterFigures`) are fields of it: a storage that keeps the whole state keeps them, one that
+drops a field loses the report of what that field held.
 
 ## Trials and the Keychain
 
@@ -554,7 +622,11 @@ swift test
 ```
 
 The tests read `conformance/vectors.json`, the answers every KeyGrant SDK must give, generated from
-the reference SDK. The edges of the SDK's own time bounds are tested on a clock the test moves by
+the reference SDK, and replay the metered-uses groups among them. Beside them, a seeded property
+test runs 1,500 sequences of spends, check-ins and releases from two processes of the app over one
+state file, against a server whose answers are lost, late, refused or lost after it recorded the
+spend, with a disk that refuses its writes and a clock that jumps (`PROPERTY_RUNS` and
+`PROPERTY_SEED` choose how many and from which seed). The edges of the SDK's own time bounds are tested on a clock the test moves by
 hand, not raced against a real one. Every suite has a time limit of a minute (on Linux, and on
 macOS 13 or later: Swift Testing keeps none on macOS 12); since a limit ends only what heeds
 cancellation, the tests' own waits on the SDK also fail after 20 seconds of real time rather than
@@ -565,7 +637,9 @@ hang.
 Every group of the conformance vectors is reproduced, every answer, but for two kinds of vector: the
 Windows cases of `machineIds`, which pin `reg.exe` output parsing (this SDK has no Windows reader),
 and the `majors` with a fraction (marked `jsOnly`), which the reference's JavaScript number can hold
-and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). The
+and `LicenseConfig.major` (an `Int`) cannot; a major below zero is reproduced (it runs as 1). Of the
+metered-uses groups, the two `useAmounts` vectors that give `use` a fraction and a text (marked `jsOnly`)
+are not replayed: an `Int` holds neither. The
 decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
 `asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink`, and for licence
 files `licenseFileToken`, `verifyLicenseFile`, `checkLicenseFile` and `licenseFileStatus`, and for a
@@ -601,7 +675,7 @@ apart from one left alone (absent). Where this SDK differs from the reference El
   `publicJWK`, `apiBaseURL`, `httpTimeout` (seconds); `LicenseStatus.isTest` and `isStalled` are
   `Bool` (the reference's `test` and `stalled` are present only when true), and
   `LicenseStatus.entitlements` is empty when the lease grants none (the reference's is absent
-  then). `trialEndDate` is added.
+  then; so is `meters`, which is empty when a lease names none). `trialEndDate` is added.
 - **`Fingerprinter.identify`** is a protocol requirement with a default implementation, which
   stands for the reference's optional method: a fingerprinter that does not implement it is read
   through `get()` with the status bound, exactly as in the reference.
@@ -636,6 +710,17 @@ apart from one left alone (absent). Where this SDK differs from the reference El
   with their limits; the SDK itself does not use it.
 - **A call is never cut short by cancellation.** The reference has no cancellation; here each call
   runs in its own task, so a cancelled caller still gets (and saves) its answer within the bounds.
+  That holds for `use(_:_:)` too: a spend whose caller was cancelled is made as it would have been, and
+  its result should be read.
+- **`use(_:_:)`** takes `n` as an `Int` (the reference's JavaScript number may also be a fraction or a
+  text, which are `invalid-amount` there), answers a `UseResult` with `ok`, `left`, `offline` and
+  `error` (a `UseError` whose raw values are the reference's words) where the reference resolves
+  `{ ok, left?, offline?, error? }`, and never throws. A stored journal entry or figure of another
+  shape is dropped when the state is read, and the next save writes the state without it (the
+  reference drops it only when a change to the journal lands, and keeps a valid entry's unknown
+  members). A figure out of a double's range (`1e400`) reads as infinity and drops its meter, in a
+  lease and in an answer, as it does in the reference. Meter codes, like entitlement names, are
+  dictionary keys, compared by canonical equivalence.
 - **The default HTTP adapter bounds the whole request** itself (`URLRequest.timeoutInterval` is an
   idle timeout, and Linux's `URLSession` does not keep even that). The product slug is
   percent-encoded in the path (no change for a slug).

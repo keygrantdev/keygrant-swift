@@ -45,6 +45,17 @@ public struct StoredState: Sendable, Hashable {
     /// Verified again on every status, so an edit to it licenses nothing. Never a key file: importing
     /// one activates its key.
     public var licenseFile: String?
+    /// The journal of this device's spends KeyGrant has not confirmed yet, oldest first, about the
+    /// stored activation: reported with the next check-in, `use` or `deactivate`, and dropped when the
+    /// server confirms it (or, unreported, after 180 days; a new void past 16 takes the oldest void's
+    /// place). At most 64 entries. Nil when there are none; when the state is
+    /// read, an entry of another shape is left out and an empty journal is nil (the state is the
+    /// device's own, never the server's word).
+    public var spends: [SpendEntry]?
+    /// The newest figures a `use` answer gave for each meter, by code, about the stored activation:
+    /// newer than the stored lease's own `met` until the lease is renewed. Nil when there are none;
+    /// read leniently, as `spends` is.
+    public var meterFigures: [String: MeterFigure]?
     /// Fields this SDK does not know (a newer SDK's), kept as they were.
     public var otherFields: [String: LicenseJSON]
 
@@ -69,6 +80,8 @@ public struct StoredState: Sendable, Hashable {
         rev: Int? = nil,
         trialReportedAt: Int? = nil,
         licenseFile: String? = nil,
+        spends: [SpendEntry]? = nil,
+        meterFigures: [String: MeterFigure]? = nil,
         otherFields: [String: LicenseJSON] = [:]
     ) {
         self.key = key
@@ -91,6 +104,8 @@ public struct StoredState: Sendable, Hashable {
         self.rev = rev
         self.trialReportedAt = trialReportedAt
         self.licenseFile = licenseFile
+        self.spends = spends
+        self.meterFigures = meterFigures
         self.otherFields = otherFields
     }
 }
@@ -107,6 +122,14 @@ extension StoredState {
         for (name, value) in members where !retiredFields.contains(name) {
             if let field = StateField(rawValue: name) {
                 self[field] = field.value(from: value)
+            } else if name == spendsName {
+                // The journal and the figures are read leniently: an entry or a figure of another
+                // shape is dropped, an empty one is absent, and any save writes the state without them.
+                let journal = spendsOf(value)
+                spends = journal.isEmpty ? nil : journal
+            } else if name == meterFiguresName {
+                let figures = storedFigures(value)
+                meterFigures = figures.isEmpty ? nil : figures
             } else {
                 otherFields[name] = value
             }
@@ -114,12 +137,17 @@ extension StoredState {
     }
 
     /// The state as a JSON object, under the field names every KeyGrant SDK uses. A retired name an
-    /// app put in `otherFields` is not written either.
+    /// app put in `otherFields` is not written either, nor is a name the state holds a field for.
     public var json: LicenseJSON {
-        var members = otherFields.filter { StateField(rawValue: $0.key) == nil && !retiredFields.contains($0.key) }
+        var members = otherFields.filter {
+            StateField(rawValue: $0.key) == nil && !retiredFields.contains($0.key) && $0.key != spendsName
+                && $0.key != meterFiguresName
+        }
         for field in StateField.allCases {
             if let value = self[field] { members[field.rawValue] = value.json }
         }
+        if let spends, !spends.isEmpty { members[spendsName] = .array(spends.map(spendJSON)) }
+        if let meterFigures, !meterFigures.isEmpty { members[meterFiguresName] = .object(meterFigures.mapValues(storedFigureJSON)) }
         return .object(members)
     }
 }
@@ -137,6 +165,10 @@ extension StoredState: Codable {
 /// What an earlier version stored to buy from the app with no key typed (its purchase secret and the
 /// two stamps beside it). Retired: never read nor written, so the next save clears them.
 let retiredFields: Set<String> = ["purchaseToken", "purchaseTokenAt", "claimAskedAt"]
+
+/// The names of the two fields the journal lands on (`Journal.swift`), which no `StatePatch` touches.
+let spendsName = "spends"
+let meterFiguresName = "meterFigures"
 
 /// A field of the stored state, by the name every SDK writes it under.
 enum StateField: String, CaseIterable, Sendable {

@@ -102,6 +102,33 @@ struct ReadmeTests {
         #expect(example.code.contains("(`activate(_:)`)"))
         #expect(!example.code.contains("client_reference_id"))
     }
+
+    /// The Metered uses example, as it is written there: the spend, its refusals told apart by the error,
+    /// and the meters of a status.
+    @Test func spendsAsTheMeteredUsesSectionShows() async throws {
+        let example = try #require(try swiftBlocks().first { $0.heading == "## Metered uses: counting what a key may do" })
+        #expect(example.code.contains(#"let spent = await license.use("exports")"#))
+        #expect(example.code.contains("case .usedUp?:") && example.code.contains("case .offlineLimit?:"))
+        #expect(example.code.contains(#"status.meters["exports"]"#))
+        func told(_ spent: UseResult) -> String {
+            if spent.ok { return "run \(spent.left ?? -1)" }
+            switch spent.error {
+            case .usedUp?: return "more \(spent.left.map(String.init) ?? "nil")"
+            case .offlineLimit?: return "connect"
+            default: return "problem \(spent.error?.rawValue ?? "")"
+            }
+        }
+        let h = try Harness.holding()
+        h.http.on("use") { _ in Harness.spent(89, at: NOW) }
+        #expect(told(await h.license.use("exports")) == "run 89")
+        h.http.on("use", status: 409, json: ["error": "used-up", "left": 1])
+        #expect(told(await h.license.use("exports", 5)) == "more 1")
+        h.http.setFail(true)
+        h.clock.set(NOW + 2 * MINUTE)
+        #expect(told(await h.license.use("renders")) == "connect")
+        #expect(told(await h.license.use("credits")) == "problem no-meter")
+        #expect(await h.license.status().meters["exports"]?.total == 100)
+    }
 }
 
 /// What the README says of this package's own suites.

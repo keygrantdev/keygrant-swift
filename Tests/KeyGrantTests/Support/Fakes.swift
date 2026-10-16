@@ -243,6 +243,8 @@ final class MemoryStorage: StorageAdapter {
     var writes: Int { state.current.writes }
     /// Reads waiting on `releaseAll`.
     var hungReads: Int { state.current.hungReads.count }
+    /// Whether a write is held inside the adapter (`holdNextWrite`).
+    var holdingWrite: Bool { state.current.heldWrite != nil }
 
     func set(_ stored: StoredState?) { state.withValue { $0.stored = stored } }
     func failWrites(_ on: Bool = true) { state.withValue { $0.failWrites = on } }
@@ -476,11 +478,17 @@ final class Gate: Sendable {
     }
 }
 
-/// Yields until `condition` holds, or about `seconds` have passed.
-func eventually(_ seconds: TimeInterval = 5, _ condition: @Sendable () -> Bool) async {
+/// Yields until `condition` holds, or about `seconds` have passed, which fails the test: a state a
+/// test waits for and never reaches is not left to show only in what it asserts after.
+func eventually(
+    _ seconds: TimeInterval = 5, sourceLocation: SourceLocation = #_sourceLocation, _ condition: @Sendable () -> Bool
+) async {
     let deadline = Date().addingTimeInterval(seconds)
     while !condition() && Date() < deadline {
         try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    if !condition() {
+        Issue.record("the state waited for was not reached within \(seconds) s of real time", sourceLocation: sourceLocation)
     }
 }
 

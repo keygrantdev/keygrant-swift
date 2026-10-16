@@ -2,13 +2,13 @@ import Foundation
 
 /// What each public call does: when to go online, and what to answer.
 extension License {
-    /// The stored state for a status, with a trial this process could not save; nil when it
-    /// cannot be read just now (`.unknown`/`.storage`).
-    func loadForStatus(readOnly: Bool) async -> StoredState? {
-        guard let state = try? await load(readOnly: readOnly) else { return nil }
-        guard let pending = unsavedTrial.current else { return state }
+    /// The stored state for a status, with a trial this process could not save, and the journal
+    /// changes it could not save; nil when it cannot be read just now (`.unknown`/`.storage`).
+    func loadForStatus(readOnly: Bool) async -> LoadedState? {
+        guard let loaded = try? await load(readOnly: readOnly) else { return nil }
+        guard let pending = unsavedTrial.current else { return loaded }
         // As a save would merge it: a newer trial answer stored since wins.
-        return merged(state, pending.patch, pending.basis)
+        return loaded.with(merged(loaded.state, pending.patch, pending.basis))
     }
 
     /// Saves the trial this process could not, and forgets it once saved. Best-effort.
@@ -26,7 +26,7 @@ extension License {
         if case .refused(let error) = typed { return .failed(error) }
         // Install memory protects the seat this install holds: re-activating that key keeps to
         // it; a first activation, or another key's, starts afresh.
-        let stored = try await load()
+        let stored = try await load().state
         let sameSeat = stored.key.map { sameKey($0, entered) } ?? false
         let installKind = sameSeat ? self.installKind(stored.deviceKind) : nil
         let device = await self.device(timing.activateMachineId, installKind: installKind)
@@ -64,27 +64,44 @@ extension License {
             Activation(key: entered, activationId: activationId, lease: lease, claims: claims, now: now, major: major, kind: identity.kind)
         )
         let activation = Asked(at: askedAt, activationId: activationId, seen: stored.verdictAt)
-        try await save(patch, basis: Basis(activation: activation))
+        // Activating another seat drops the journal of the old one, unreported; the same seat keeps it.
+        try await saveWith(patch, guardTime: nil, basis: Basis(activation: activation), ops: [.activated(about: activationId)])
         return .activated
     }
 
     func deactivateNow() async throws -> DeactivateResult {
-        let state = try await load()
+        // What this process could not save lands first, so the release reports it: the journal goes
+        // with the seat.
+        await saveUnsavedJournal()
+        let view = try await load()
+        let state = view.state
         // Nothing held is nothing to release: the seat is as free as it gets. Nor is a seat another
         // device holds this one's to release (`seatElsewhere`).
         var released = true
-        if let key = nonEmpty(state.key), let activationId = nonEmpty(state.activationId), !(await seatElsewhere(state)) {
-            // Only a 200 is KeyGrant saying the seat is free: a 5xx, a 429 or a proxy's page is an
-            // answer, but not that one. The local licence is dropped whatever it says.
-            do {
-                released = try await post("deactivate", ["key": .string(key), "activationId": .string(activationId)]).status == 200
-            } catch {
-                released = false
-            }
+        if let key = nonEmpty(state.key), let activationId = nonEmpty(state.activationId) {
+            let device = await self.device(timing.machineId, installKind: state.deviceKind)
+            if !seatElsewhere(state, device) { released = await release(view, key: key, activationId: activationId, device: device) }
         }
-        // Stamped, so that an answer to an older ask is not saved over it.
-        try await save(unkeyed + [.verdictAt: .int(effectiveNow(state))])
+        // Stamped, so that an answer to an older ask is not saved over it. The journal goes with the
+        // rest of the licence: what the release carried is all the server will hear of it.
+        try await saveWith(
+            unkeyed + [.verdictAt: .int(effectiveNow(state))], guardTime: nil, basis: Basis(), ops: [.deactivated]
+        )
         return DeactivateResult(released: released)
+    }
+
+    /// The release request, carrying the journal of unsynced spends and, with it, the device's
+    /// fingerprints as a validate sends them (so the server holds the reports to the seat's device;
+    /// none when it cannot tell). Only a 200 is KeyGrant saying the seat is free: a 5xx, a 429 or a
+    /// proxy's page is an answer, but not that one, and no answer is none. The local licence is
+    /// dropped by the caller whatever it says.
+    private func release(_ view: LoadedState, key: String, activationId: String, device: Device) async -> Bool {
+        var body: [String: LicenseJSON] = ["key": .string(key), "activationId": .string(activationId)]
+        if let reports = spendsReported(await reportable(view)) {
+            body["spends"] = reports
+            if device.canTell { body["fingerprints"] = .array(device.fingerprints.map(LicenseJSON.string)) }
+        }
+        return (try? await post("deactivate", .object(body)))?.status == 200
     }
 
     /// Whether the stored activation is another device's: a device refusal that stands for this
@@ -92,8 +109,7 @@ extension License {
     /// (`heldElsewhere`). A state file copied or restored from another PC (a roaming profile, a
     /// backup, a cloned disk) carries that PC's activation; releasing it would lock that PC out at
     /// its next check-in, so `deactivate()` only drops it here, and this device held no seat.
-    private func seatElsewhere(_ state: StoredState) async -> Bool {
-        let device = await self.device(timing.machineId, installKind: state.deviceKind)
+    private func seatElsewhere(_ state: StoredState, _ device: Device) -> Bool {
         let tellable = (ownClaim: device.ownClaim, canTell: device.canTell)
         if standingRefusal(state, major: major, device: tellable) == .device { return true }
         guard let lease = nonEmpty(state.lease) else { return false }
@@ -102,7 +118,8 @@ extension License {
 
     /// The status, asking the server when it should. `readOnly` (behind a call that has not
     /// settled): from what is stored only, with no ask and no write.
-    func statusNow(_ state: StoredState, force: Bool, readOnly: Bool) async -> LicenseStatus {
+    func statusNow(_ view: LoadedState, force: Bool, readOnly: Bool) async -> LicenseStatus {
+        let state = view.state
         // A stored offline licence file that licenses this build wins, offline, with no ask and no
         // write; one that does not answers only when no key path and no running trial does.
         let file = fileStatus(state)
@@ -115,10 +132,10 @@ extension License {
             ? nil : standingRefusal(state, major: major, device: device.map { (ownClaim: $0.ownClaim, canTell: $0.canTell) })
         if let refused {
             if readOnly { return LicenseStatus(state: .invalid, reason: LicenseReason(refused), key: state.key) }
-            return await refusedStatus(state, refused, force: force)
+            return await refusedStatus(view, refused, force: force)
         }
         if nonEmpty(state.key) != nil, let lease = nonEmpty(state.lease) {
-            return await licenseStatus(state, lease: lease, now: now, force: force, readOnly: readOnly)
+            return await licenseStatus(view, lease: lease, now: now, force: force, readOnly: readOnly)
         }
         return await trialOrFile(state, now: now, file: file, ask: TrialAsk(force: force, readOnly: readOnly))
     }
@@ -194,45 +211,54 @@ extension License {
 
     /// A refusal that stands for this build: answered as stored, and asked again once the wait
     /// after the last ask is over, or when forced, so a renewed or reinstated key heals.
-    private func refusedStatus(_ state: StoredState, _ refused: Refusal, force: Bool) async -> LicenseStatus {
-        let stored = LicenseStatus(state: .invalid, reason: LicenseReason(refused), key: state.key)
-        if !askDue(state, clockNow: clockNow(), force: force) { return stored }
-        return await tryRenew(state) ?? stored
+    private func refusedStatus(_ view: LoadedState, _ refused: Refusal, force: Bool) async -> LicenseStatus {
+        let stored = LicenseStatus(state: .invalid, reason: LicenseReason(refused), key: view.state.key)
+        if !askDue(view.state, clockNow: clockNow(), force: force) { return stored }
+        return await tryRenew(view) ?? stored
     }
 
-    private func licenseStatus(_ state: StoredState, lease: String, now: Int, force: Bool, readOnly: Bool) async -> LicenseStatus {
+    private func licenseStatus(_ view: LoadedState, lease: String, now: Int, force: Bool, readOnly: Bool) async -> LicenseStatus {
+        let state = view.state
         let evaluated = await evaluate(lease, now: now, key: state.key, activationId: state.activationId, deviceKind: state.deviceKind)
-        // What the lease says offline, entitlements included: the answer whenever the server gives
-        // no verdict (`leaseStatus`).
-        let offline = leaseStatus(evaluated, key: state.key)
+        // What the lease says offline, entitlements and meters included: the answer whenever the
+        // server gives no verdict (`leaseStatus`).
+        var offline = leaseStatus(evaluated, key: state.key)
         if case .ok(_, let claims) = evaluated {
+            // The key's meters, net of the journal.
+            offline = meteredStatus(offline, claims: claims, state: state)
             if readOnly { return offline }
-            let held = await noteKept(state, claims: claims, now: now)
-            if force { return await tryRenew(held) ?? offline }
+            let noted = await noteKept(view, claims: claims, now: now)
+            if force { return await tryRenew(noted) ?? offline }
             // Asked, bounded in time, when the server should hear from this device before the
-            // lease runs out and the wait allows (`asksOnValidLease`). The valid lease is the
+            // lease runs out and the wait allows (`asksOnValidLease`), or when it holds spends
+            // KeyGrant has not heard of and the journal's own wait is not running. The journal that
+            // asks is the one a request would report (`reportable`): spends held in memory that no
+            // request carries do not make `status()` ask at every call. The valid lease is the
             // answer when the ask gets no verdict.
-            let asks = asksOnValidLease(claims: claims, state: held, major: major, now: now, clockNow: clockNow())
-            if !asks { return offline }
-            return await tryRenew(held, timeout: timing.statusCheck) ?? offline
+            var asking = noted.state
+            let reportable = await self.reportable(noted)
+            asking.spends = reportable.isEmpty ? nil : reportable
+            if !asksOnValidLease(claims: claims, state: asking, major: major, now: now, clockNow: clockNow()) { return offline }
+            return await tryRenew(noted, timeout: timing.statusCheck) ?? offline
         }
         // Not valid here: give the server a chance to heal it, once the wait is over or when
         // forced. Only when it cannot be reached (or agrees) does the local reason stand.
-        if !readOnly, askDue(state, clockNow: clockNow(), force: force), let renewed = await tryRenew(state) {
+        if !readOnly, askDue(state, clockNow: clockNow(), force: force), let renewed = await tryRenew(view) {
             return renewed
         }
         return offline
     }
 
     /// The state with this run noted in `keptMajor`, saved when that changed.
-    private func noteKept(_ state: StoredState, claims: LeaseClaims, now: Int) async -> StoredState {
+    private func noteKept(_ view: LoadedState, claims: LeaseClaims, now: Int) async -> LoadedState {
+        let state = view.state
         let kept = keptWith(state.keptMajor, claims: claims, now: now, major: major)
-        if kept == state.keptMajor { return state }
+        if kept == state.keptMajor { return view }
         // About this activation: not saved onto another one stored meanwhile.
         _ = await saveBestEffort([.keptMajor: .int(orClear: kept)], basis: Basis(about: About(activationId: state.activationId)))
-        var held = state
-        held.keptMajor = kept
-        return held
+        var noted = state
+        noted.keptMajor = kept
+        return view.with(noted)
     }
 
     /// The trial's status (`trialStatusOf`): live only on a valid trial lease, which says its end

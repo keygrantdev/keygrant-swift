@@ -19,6 +19,9 @@ struct LeaseClaims: Sendable, Hashable {
     var minMajor: Double?
     var upgradeUntil: Double?
     var ent: [String: Entitlement] = [:]
+    /// The key's meters as the lease signs them, read leniently (`metersOf`): nil when the lease has
+    /// no such claim, and empty for a claim that is not an object.
+    var met: [String: BaseFigure]?
     var iat: Double
     var exp: Double
     var grace: Bool?
@@ -31,8 +34,8 @@ private let licenseModels: Set<String> = ["perpetual", "subscription", "trial"]
 extension LeaseClaims {
     /// The claims a payload holds, checked as the server's claims schema checks them: nil when any
     /// does not hold. An optional claim present as `null` does not hold either, but for `ent`,
-    /// which never fails the claims: it is read leniently (`entitlementsOf`). Claims it does not
-    /// know are ignored.
+    /// which never fails the claims: it is read leniently (`entitlementsOf`), and so is `met`
+    /// (`metersOf`). Claims it does not know are ignored.
     init?(json: LicenseJSON) {
         guard case .object(let claims) = json, claims["iss"]?.stringValue == "keygrant",
             let sub = nonEmptyString(claims["sub"]), let product = nonEmptyString(claims["product"]),
@@ -54,7 +57,7 @@ extension LeaseClaims {
         self.init(
             sub: sub, product: product, aid: aid, fp: fp, fpk: fpk, model: model, lim: lim,
             major: major ?? 0, minMajor: minMajor, upgradeUntil: upgradeUntil, ent: entitlementsOf(claims["ent"]),
-            iat: iat, exp: exp, grace: grace, test: test
+            met: claims["met"].map { metersOf($0) }, iat: iat, exp: exp, grace: grace, test: test
         )
     }
 }
@@ -183,6 +186,7 @@ extension LeaseClaims {
             "model": .string(model), "lim": .number(lim), "major": .number(major), "ent": .object(ent.mapValues(\.json)),
             "iat": .number(iat), "exp": .number(exp),
         ]
+        if let met { members["met"] = metersJSON(met) }
         if let fp { members["fp"] = .string(fp) }
         if let fpk { members["fpk"] = .string(fpk.rawValue) }
         if let minMajor { members["minMajor"] = .number(minMajor) }

@@ -80,6 +80,18 @@ public struct LicenseStatus: Sendable, Hashable {
     /// nor the next status. Compared and hashed by content, as `Hashable` needs: a dictionary's
     /// equality and hash do not depend on the order it keeps its members in.
     public var entitlements: [String: Entitlement]
+    /// The key's meters, by code, as its lease signs them (the `met` claim) or the last answer to a
+    /// spend gave them, net of the uses this device spent that KeyGrant has not heard of yet:
+    /// `status.meters["exports"]?.left`. Works offline.
+    ///
+    /// On a `.licensed` status from a key's lease that names meters only. Empty on every other
+    /// status (a trial, a stored offline licence file, a stored refusal, an expired lease and none at
+    /// all have no meters), and when the lease names none. No status reads a meter to decide whether
+    /// the app is licensed: a meter that is used up refuses spends, never the licence.
+    ///
+    /// The app's own copy, as `entitlements` is, and its names are dictionary keys in the same
+    /// way (see there).
+    public var meters: [String: MeterStatus]
     /// An earlier call on this `License` has not finished (a storage adapter stuck, say), so this
     /// answer comes from what is stored, with no ask and no write. A restart clears it.
     public var isStalled: Bool
@@ -98,6 +110,7 @@ public struct LicenseStatus: Sendable, Hashable {
         trialEndsAt: Int? = nil,
         isTest: Bool = false,
         entitlements: [String: Entitlement] = [:],
+        meters: [String: MeterStatus] = [:],
         isStalled: Bool = false,
         source: LicenseSource? = nil,
         licensedTo: LicensedTo? = nil
@@ -109,6 +122,7 @@ public struct LicenseStatus: Sendable, Hashable {
         self.trialEndsAt = trialEndsAt
         self.isTest = isTest
         self.entitlements = entitlements
+        self.meters = meters
         self.isStalled = isStalled
         self.source = source
         self.licensedTo = licensedTo

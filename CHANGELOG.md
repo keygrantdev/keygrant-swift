@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0
+
+- Metered uses: `License.use(_:_:)` spends `n` uses (default 1) of a meter the key's licence model counts,
+  before the work they count, and answers a `UseResult` (`ok`, `left`, `offline`, `error`). Online it is
+  exact: the server takes `n` only while the meter has room for all of it (`.usedUp`, with `left`).
+  With no answer (no network, a timeout, a 5xx, a 429 or an answer the SDK cannot use) the device spends
+  from its offline allowance for the meter, never past what it last heard is left (`.offlineLimit`), and
+  reports the spend with its next request. It never throws for an outcome, behind a call that has not
+  finished too, and a call whose task is cancelled still runs to its bounded answer. `UseError` has the
+  ten words every KeyGrant SDK uses (`.invalidAmount`, `.noMeter`, `.usedUp`, `.offlineLimit`, `.notLicensed`,
+  `.storage`, `.revoked`, `.upgrade`, `.outdated`, `.device`), their raw values those words.
+  `maxMeterUses` (1,000,000,000) is the most one spend may ask for.
+- `LicenseStatus.meters` shows each meter of the lease that licenses the device (`MeterStatus`: `left`,
+  `total`, `offline`, `unsynced`, `resets`), net of the uses this device spent and has not reported; it is
+  empty on every other status. `LicenseStatus` takes `meters` in its initializer, its equality and its hash.
+  No status reads a meter to decide whether the app is licensed.
+- The journal of unsynced spends is kept in the state file (`StoredState.spends`, with the newest figures a
+  spend was answered with in `StoredState.meterFigures`; `SpendEntry`, `SpendKind` and `MeterFigure` are
+  new public types) and is sent with the next validate, `use` and `deactivate`; the server's confirmation
+  drops an entry. It is capped at 64 entries and 16 voids (the take-back of a spend that was refused
+  after its answer was lost; a new void past 16 takes the oldest one's place), an unreported entry is
+  given up after 180 days, it is read leniently (an entry of another shape is left out when the state is
+  read), and it never fails a renewal or a release. A spend the disk refuses is kept
+  in memory, counted everywhere the state is read, and saved by the next call that can. A `deactivate()`
+  that carries a report also names the device's fingerprints, as a validate does.
+- `status()` on a valid lease also asks, once its own wait is over (a minute after an unanswered spend,
+  doubling to an hour), when the journal holds an entry a request would report, so a device back online
+  gives its allowance back. An answer to a validate that carried a report and confirmed none of it starts
+  the wait of an answer without a lease.
+- The lease's `met` claim is read leniently: a meter whose figures are not whole numbers from 0 to 2^53 - 1
+  (a fraction, a negative, a figure out of a double's range such as `1e400`) is left out, never the lease or
+  the meters beside it.
+- The conformance vectors' twelve metered-uses groups are replayed (410 of their 412 vectors: the two that
+  give `use` a fraction and a text are JavaScript's only), with the captured request bodies, behaviour
+  tests, and a seeded property test of two processes over one state file (1,500 sequences).
+
 ## 0.6.0
 
 - User-locked keys: `License.activate(_:email:code:)` and `License.importLicenseFile(_:email:code:)`. A
