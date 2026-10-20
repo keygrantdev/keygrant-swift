@@ -24,7 +24,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.7.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.8.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -319,6 +319,70 @@ address longer than 254 UTF-16 units, or a code that is not six digits, answers 
 wrong tries; the key is judged first, then the address, then the code. A key that is not locked ignores
 both once they reach the server. `importLicenseFile(_:email:code:)` passes them on to a key file's key.
 `deactivate()`, `refresh()` and `startTrial()` take neither.
+
+## Restoring a licence without the key (App Store builds)
+
+A build that may not take a typed licence key (an App Store build) restores a web buyer's licence by the
+address the key was sold to. The product's **Key pickup** must be on. The app asks for a code, the customer
+types the code that comes to that address, and the SDK activates the key that fits this build:
+
+```swift
+// 1. Mail a code to the address the key was sold to (the answer is the same whether or not the address holds a key).
+let sent = await license.pickUp(email: emailField)
+
+// 2. The customer types the code; restore.
+switch await license.restoreByEmail(email: emailField, code: codeField) {
+case .restored:
+    break                                                    // licensed: read status()
+case .failed(.pickup(let refusal)):
+    switch refusal.error {
+    case .wrongCode: askAgain()
+    case .codeExpired: _ = await license.pickUp(email: emailField)   // a new code
+    case .tooManyAttempts, .tryAgain: waitSeconds(refusal.retryAfter)
+    default: showTheError()
+    }
+case .failed(.noKey):
+    showNoKeyUnderThatAddress()
+case .failed(.license(.upgrade)):
+    offerAnUpgrade()                                         // the keys are for an older major
+case .failed(.license(.outdated)):
+    askToUpdateTheApp()                                      // the keys start at a later major
+case .failed(.license):
+    showTheOtherErrors()                                     // activate's own, e.g. .limit
+}
+```
+
+`pickUp(email:code:)` hands back the address's keys instead (`PickUpKeysResult.pickedKeys`: show them by
+`modelName`, never the key) for an app that lets the customer choose; activate one with
+`activate(picked.key, email: address, code: picked.activationCode)`. `restoreByEmail` chooses for the
+customer, among the keys that cover this build's major: the key this device already holds a seat on, else one
+with a free seat, else the first.
+
+| `PickupError` | Means | The app |
+|---|---|---|
+| `invalidEmail` | the address is blank or longer than any | ask again |
+| `wrongCode` | not six digits, or not the address's live code | ask again |
+| `codeExpired` | no live code (expired after 10 minutes, used, burnt by its fifth wrong try, or never asked for) | `pickUp(email:)` again |
+| `tooManyAttempts` | thirty wrong codes for the address this hour, or too many asks or confirms from this network | wait `retryAfter` seconds |
+| `pickupDisabled` | the product's Key pickup is off | offer another way (support) |
+| `tryAgain` | a count could not be made | retry |
+| `network` | no answer, or an answer that is not a pickup's | retry |
+
+A restore's refusal is a `RestoreError`: `.pickup` (the code was not taken), `.noKey` (the address holds no
+key of the product) or `.license` with a `LicenseError`: `.upgrade` (the keys are for an older major than this
+build) or `.outdated` (their lowest version is newer), activating nothing; then `activate`'s own errors
+(`.limit`, `.revoked`, ...) as they come, and `.network` behind a call that has not finished. The address and the
+code are prepared as an activation's are (trimmed, a code's spaces dropped) and refused at once, asking
+nothing, when the address is blank or the code is not six digits, so a mistyped code costs the address none of
+its wrong tries. `retryAfter` is read from the server's answer. The first confirm spends the code, so the keys it
+answered are kept in memory for 10 minutes (a code's life) by the address and code as sent: a confirm or a
+restore with the same pair answers from them and asks nothing, so a restore whose activation got no answer can
+be retried with the same code, and a restore after `pickUp(email:code:)` needs no new one. A restore that
+activates drops them. Nothing about a pickup is stored (not the address, the code, the keys or a refusal): the
+two `pickUp` calls write nothing and run beside any call, and `restoreByEmail` stores only the activation, as
+`activate` does, and runs one at a time with it. A pickup never takes a licence away. The rules are in the SDK
+contract's section on key pickup, which the conformance vectors `pickupAsks`, `pickupRefusals`, `pickedKeys`
+and `pickupChoices` hold this package to.
 
 ## Buying from the app
 
@@ -622,7 +686,7 @@ swift test
 ```
 
 The tests read `conformance/vectors.json`, the answers every KeyGrant SDK must give, generated from
-the reference SDK, and replay the metered-uses groups among them. Beside them, a seeded property
+the reference SDK, and replay the metered-uses and key-pickup groups among them. Beside them, a seeded property
 test runs 1,500 sequences of spends, check-ins and releases from two processes of the app over one
 state file, against a server whose answers are lost, late, refused or lost after it recorded the
 spend, with a disk that refuses its writes and a clock that jumps (`PROPERTY_RUNS` and
@@ -643,7 +707,7 @@ are not replayed: an `Int` holds neither. The
 decisions the vectors pin are the functions the SDK itself calls (`renewalOutcome`,
 `asksOnValidLease`, `deviceFrom`, `identityOf`, `savedLastSeen`, `referencedLink`, and for licence
 files `licenseFileToken`, `verifyLicenseFile`, `checkLicenseFile` and `licenseFileStatus`, and for a
-user-locked key `typedFor`, among them), and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
+user-locked key `typedFor`, and for a key pickup `pickupAsk`, `pickupRefusal`, `pickedKeysOf` and `chosenKey`, among them), and answers are compared exactly: text unit for unit, and in a patch a field cleared (`null`)
 apart from one left alone (absent). Where this SDK differs from the reference Electron SDK, and why:
 
 - **`activate(_:)` never throws.** When the state file cannot be read or saved, the reference
@@ -654,6 +718,11 @@ apart from one left alone (absent). Where this SDK differs from the reference El
 - **`activate(_:email:code:)` and `importLicenseFile(_:email:code:)`** take the address and code as
   two labelled parameters that default to nil, where the reference takes an options object; a code is
   text here, where the reference also reads a code kept as a number.
+- **`pickUp(email:)`, `pickUp(email:code:)` and `restoreByEmail(email:code:)`** are the reference's `pickUp(email)`,
+  `pickUp(email, code)` and `restoreByEmail(email, code)`, as labelled methods. A pickup's refusal is a
+  `PickupRefusal` (the `PickupError` and `retryAfter`) where the reference resolves `{ ok: false, error, retryAfter? }`,
+  and a restore's a `RestoreError` (`.pickup`, `.noKey` or `.license`) where the reference's one `error` holds any of
+  the words. None throws; a restore whose state cannot be read or saved answers `.license(.storage)`, as `activate` does.
 - **`importLicenseFile(_:)`** answers a refusal as `.refused` and a key file's failed activation as
   `.notActivated`, where the reference resolves `{ ok: false, error }` with either word, and throws
   where the reference rejects. A stored `licenseFile` that is not text is no file here (a field of the

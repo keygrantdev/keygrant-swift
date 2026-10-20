@@ -40,6 +40,8 @@ public final class License: Sendable {
     /// The launch report last sent (`reportLaunch`), which the SDK itself never awaits: kept so a
     /// test can wait for it (`launchReportSettled`).
     let launchReport = Locked<Task<Void, Never>?>(nil)
+    /// The keys the last pickup confirm answered, in memory only (`Pickup.swift`).
+    let keptPickup = Locked<KeptKeys?>(nil)
 
     /// A licence for `config.product`. Throws `LicenseConfigError` when `config.publicJWK` is not
     /// an Ed25519 public key (embedded at build time, so this is found the first time the app runs).

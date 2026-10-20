@@ -4,7 +4,7 @@ import Testing
 @testable import KeyGrant
 
 /// What the metered-uses vector tests share. The groups themselves are read from `conformance/vectors.json`
-/// as every other group is (`ConformanceTests.file`), where they close the file, and a missing file or group
+/// as every other group is (`ConformanceTests.file`), where they come before the key-pickup groups, and a missing file or group
 /// FAILS the test that needs it. The captured request bodies (`wire-bodies.json`) sit beside the
 /// reference's generator, so only the repository that holds the reference has them: a test that needs them
 /// is SKIPPED, with the reason, outside that repository (the public export of this SDK, which has

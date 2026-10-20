@@ -41,8 +41,8 @@ struct ConformanceTests {
         let fractions = try group("majors").filter { vector in
             (vector["configured"]?.numberValue).map { $0 != $0.rounded(.towardZero) } == true
         }.count
-        #expect(groups.count == 57 && total == 1277 && windows == 9 && fractions == 4)
-        #expect(total - windows - fractions - MeterVectors.jsOnly == 1262)
+        #expect(groups.count == 61 && total == 1377 && windows == 9 && fractions == 4)
+        #expect(total - windows - fractions - MeterVectors.jsOnly == 1362)
     }
 
     static let answered: Set<String> = [
@@ -62,6 +62,8 @@ struct ConformanceTests {
         // The metered-uses groups (ConformanceMeterTests.swift).
         "meterClaims", "meterLeases", "useAmounts", "meterFigures", "meterStatuses", "offlineSpends", "useAsks",
         "syncAsks", "useOutcomes", "journals", "spendReports", "spendConfirmations",
+        // The key-pickup groups (ConformancePickupTests.swift).
+        "pickupAsks", "pickupRefusals", "pickedKeys", "pickupChoices",
     ]
 
     /// Answers are compared as JSON is, unit for unit: text only canonically equivalent to the
@@ -107,7 +109,7 @@ struct ConformanceTests {
             "TRIAL_REPORT_MS": .number(Double(Waits.trialReportMs)),
             "MAX_LICENSE_FILE_BYTES": .number(Double(maxLicenseFileBytes)),
         ]
-        // The metered-uses constants close this block, as their groups close the file (ConformanceMeterTests.swift).
+        // The metered-uses constants close this block (ConformanceMeterTests.swift).
         ours.merge(MeterVectors.constants) { _, meter in meter }
         #expect(constants == .object(ours))
     }

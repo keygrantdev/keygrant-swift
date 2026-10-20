@@ -5,7 +5,7 @@ import Testing
 
 /// The metered-uses groups: what every KeyGrant SDK must answer for the same inputs, answered from
 /// each vector's own JSON through the functions the SDK itself decides with, with the conventions of
-/// the harness around this extension (ConformanceTests.swift). They close `conformance/vectors.json`.
+/// the harness around this extension (ConformanceTests.swift). They come before the key-pickup groups that close `conformance/vectors.json`.
 extension ConformanceTests {
     @Test func theCapturedRequestBodiesAreFoundWhereTheyAreMade() {
         // The captured request bodies sit beside the reference's generator in the repository that makes them.
