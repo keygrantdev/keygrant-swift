@@ -182,7 +182,8 @@ public final class License: Sendable {
     /// absolute URL. Send a customer there to buy an upgrade for the key they hold. The activation
     /// id, never the key: a URL lands in browser history and logs, and the activation id grants
     /// nothing on its own. The link's own parameters and fragment are kept as written
-    /// (`referencedLink`).
+    /// (`referencedLink`). Selling through Paddle, the link is the tenant's own checkout page,
+    /// which gives `client_reference_id` to Paddle.js as custom data under the same name.
     public func upgradeURL(paymentLink: URL) async -> URL? {
         // Read-only: this runs outside the one-at-a-time order, beside any call.
         guard let state = try? await load(readOnly: true).state, nonEmpty(state.key) != nil,
