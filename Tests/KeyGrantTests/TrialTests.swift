@@ -357,4 +357,45 @@ struct StashedTrialStartTests {
         try await StashedTrialStart.write(1_000, to: item)
         #expect(item.writes == ["update 1000"])
     }
+
+    @Test func answersItsCallerAtItsBoundWhenTheItemDoesNotAnswer() async throws {
+        // A Keychain call that hangs: the Keychain stash bounds itself, the SDK bounding no stash.
+        let ticker = ManualTicker()
+        let gate = Gate()
+        let item = MemoryStashItem("1000")
+        item.holdReads(until: gate)
+        let answered = Flag()
+        let reading = Task { () -> Bool in
+            defer { answered.set(true) }
+            do {
+                _ = try await StashedTrialStart.read(item, within: 5, on: ticker)
+                return false
+            } catch {
+                return error is TimeoutError
+            }
+        }
+        await eventually { ticker.deadlinesMs == [5_000] }
+        ticker.advance(ms: 4_999)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(!answered.on, "answered before its bound")
+        ticker.advance(ms: 1)
+        #expect(await answer { await reading.value } == true)
+        // A write's caller is answered at its bound too; the write goes on once the item answers,
+        // still only on what it read.
+        let writing = Task { () -> Bool in
+            do {
+                try await StashedTrialStart.write(500, to: item, within: 5, on: ticker)
+                return false
+            } catch {
+                return error is TimeoutError
+            }
+        }
+        await eventually { ticker.deadlinesMs == [10_000] }
+        ticker.advance(ms: 5_000)
+        #expect(await answer { await writing.value } == true)
+        #expect(item.writes.isEmpty)
+        gate.open()
+        await eventually { item.writes == ["update 500"] }
+        #expect(item.writes == ["update 500"])
+    }
 }

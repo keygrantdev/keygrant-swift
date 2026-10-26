@@ -25,6 +25,35 @@ struct MachineIdTests {
         #expect(await readMachineId(mac(.hang), timeout: 0.1) == .transient)
     }
 
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    /// A Mac app and a Mac Catalyst app read the same id, this Mac's, through IOKit, and are the
+    /// same device: the Mac's fingerprint (`machine-id|<id>`, never an install id), with its host
+    /// name beside it.
+    @Test func readsThisMacsIOPlatformUUIDInAMacAppAndAMacCatalystAppAlike() async throws {
+        #expect(nodePlatform == "darwin")
+        // The bound is not what is tested: generous, so a busy runner cannot fail it.
+        let reading = await readMachineId(SystemMachineIdSource(), timeout: 10)
+        guard case .id(let id) = reading else {
+            Issue.record("no IOPlatformUUID: \(reading)")
+            return
+        }
+        #expect(UUID(uuidString: id) != nil)
+        let identity = try await DefaultFingerprinter(source: SystemMachineIdSource(), cache: FingerprintCache()).identify(timeout: 10)
+        #expect(identity == DeviceIdentity(fingerprint: machineFingerprint(id), kind: .machine, alternates: [HOST]))
+        // No Keychain install id: on a Mac it would need a provisioning profile.
+        #expect(try await SystemMachineIdSource(product: "sluice").installId() == nil)
+    }
+    #endif
+
+    #if targetEnvironment(macCatalyst)
+    /// Compiled only for Mac Catalyst, where `#if os(iOS)` holds: the SDK names the platform as the
+    /// Mac it runs on. `ci/sdk/test-swift-macos.sh` checks this test passed, by its name, to know the
+    /// Catalyst run ran: rename both together.
+    @Test func namesAMacCatalystAppAsTheMacItRunsOn() {
+        #expect(swiftOS == "macOS" && nodePlatform == "darwin")
+    }
+    #endif
+
     @Test func readsEtcMachineIdOnLinuxElseTheDBusOneTrimmed() async {
         #expect(await readMachineId(linuxMachine(id: "a1b2c3d4e5f6\n"), timeout: 1, on: ManualTicker()) == .id("a1b2c3d4e5f6"))
         let dbus = ScriptedMachineSource(platform: "linux", files: ["/var/lib/dbus/machine-id": .text("dbus0001\n")])
@@ -199,7 +228,8 @@ struct DefaultFingerprinterTests {
 
     @Test(arguments: [
         ("macOS", "darwin"), ("Linux", "linux"), ("Windows", "win32"), ("FreeBSD", "freebsd"), ("OpenBSD", "openbsd"),
-        ("Android", "android"),
+        // iOS and iPadOS, which Node does not run on: the name the SDK's own rules for them go by.
+        ("Android", "android"), ("iOS", "ios"),
     ])
     func namesThePlatformAsNodeDoes(swift: String, node: String) {
         #expect(nodePlatformName(swiftOS: swift) == node)
@@ -250,5 +280,19 @@ struct DefaultFingerprinterTests {
         #expect(second == first)
         // In the cache every default fingerprinter of the process shares.
         #expect(FingerprintCache.process.settled?.fingerprint == fingerprint)
+    }
+
+    @Test func isTheOneALicenseMakesWhateverTheProductOffAPhone() throws {
+        // On a Mac (in a Mac Catalyst run too: this is its pin of the Mac's defaults) or on Linux, a
+        // product's default reads the machine, through the process's cache.
+        let fingerprinter = DefaultFingerprinter(product: "sluice")
+        #expect(fingerprinter.cache === FingerprintCache.process)
+        #expect((fingerprinter.source as? SystemMachineIdSource)?.product == "sluice")
+        // A licence given no fingerprinter makes that one, and given no stash, the one that keeps nothing.
+        let license = try License(LicenseConfig(product: "sluice", apiBaseURL: apiBase, publicJWK: Signer().publicJWK))
+        let made = try #require(license.reader.fingerprinter as? DefaultFingerprinter)
+        #expect(made.cache === FingerprintCache.process && (made.source as? SystemMachineIdSource)?.product == "sluice")
+        #expect(license.registry is NoRegistryStash)
+        #expect(defaultRegistry(product: "sluice") is NoRegistryStash)
     }
 }

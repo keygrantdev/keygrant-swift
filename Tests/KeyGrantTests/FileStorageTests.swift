@@ -44,6 +44,9 @@ struct DefaultPathTests {
     @Test(arguments: [
         ("darwin", "/Users/jo", [String: String](), "/Users/jo/Library/Application Support/KeyGrant/sluice.json"),
         ("darwin", "/Users/jo/Library/Containers/com.example.app/Data", [:], "/Users/jo/Library/Containers/com.example.app/Data/Library/Application Support/KeyGrant/sluice.json"),
+        // An iPhone app's home is its container: the state is in the container's Application Support,
+        // whatever the environment says of a config folder.
+        ("ios", "/var/mobile/Containers/Data/Application/9C1D", ["XDG_CONFIG_HOME": "/tmp/cfg"], "/var/mobile/Containers/Data/Application/9C1D/Library/Application Support/KeyGrant/sluice.json"),
         ("linux", "/home/jo", ["XDG_CONFIG_HOME": "/home/jo/.cfg"], "/home/jo/.cfg/keygrant/sluice.json"),
         ("linux", "/home/jo", ["XDG_CONFIG_HOME": "/home/jo/.cfg/"], "/home/jo/.cfg/keygrant/sluice.json"),
         ("linux", "/home/jo", [:], "/home/jo/.config/keygrant/sluice.json"),
@@ -605,7 +608,7 @@ struct DefaultStorageTests {
                 )
                 #expect(await license.activate(KEY) == .activated)
                 let path = FileStorage.defaultPath(product: PRODUCT)
-                #if os(macOS)
+                #if os(macOS) || targetEnvironment(macCatalyst)
                 #expect(path == "\(dir)/Library/Application Support/KeyGrant/sluice.json")
                 #else
                 #expect(path == "\(dir)/config/keygrant/sluice.json")
@@ -620,7 +623,7 @@ struct DefaultStorageTests {
     @Test func keepsTheStateUnderTheHomeFolderWhenNoConfigFolderIsSet() async throws {
         try await inTemp { dir in
             try await withEnvironment(["HOME": dir, "XDG_CONFIG_HOME": nil]) {
-                #if os(macOS)
+                #if os(macOS) || targetEnvironment(macCatalyst)
                 #expect(FileStorage.defaultPath(product: PRODUCT) == "\(dir)/Library/Application Support/KeyGrant/sluice.json")
                 #else
                 #expect(FileStorage.defaultPath(product: PRODUCT) == "\(dir)/.config/keygrant/sluice.json")

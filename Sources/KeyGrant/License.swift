@@ -65,11 +65,12 @@ public final class License: Sendable {
         deviceName = trimToLength(config.deviceName, maxDeviceName)
         let adapters = config.adapters
         storage = adapters.storage ?? FileStorage(path: FileStorage.defaultPath(product: config.product))
-        registry = adapters.registry ?? NoRegistryStash()
+        registry = adapters.registry ?? defaultRegistry(product: config.product)
         clock = adapters.clock ?? SystemClock()
         http = adapters.http ?? URLSessionHTTP()
         reader = DeviceIdentityReader(
-            adapters.fingerprinter ?? DefaultFingerprinter(), slack: timing.identifySlack, ticker: timing.ticker
+            adapters.fingerprinter ?? DefaultFingerprinter(product: config.product),
+            slack: timing.identifySlack, ticker: timing.ticker
         )
         self.timing = timing
         calls = CallQueue(grace: config.httpTimeout + timing.lockGrace, ticker: timing.ticker)

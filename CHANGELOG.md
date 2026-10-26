@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0
+
+- iPhone and iPad: the package builds for iOS and iPadOS 15 and later, with the same API. The device is an
+  install id the SDK keeps in the Keychain (service `dev.keygrant.install`, account the product slug, on this
+  device only), written at the first launch from `identifierForVendor` and kept across a reinstall; its
+  fingerprint hashes `machine-id|ios:<id>`, as the Dart SDK's does on iOS. An iPhone or iPad never falls back to
+  a host name, and offers none beside its id: when the Keychain cannot be read, the run cannot tell who it is,
+  judges nothing, and an activation answers `.network`. Before the first unlock after a restart the state file
+  cannot be read either: `status()` answers `.unknown`/`.storage` and an activation `.storage`.
+- On iOS and iPadOS the state file is in the app container's `Library/Application Support/KeyGrant`, and the
+  default registry stash is `KeychainTrialStash` (on this device only), so a reinstall cannot restart a trial.
+  Elsewhere both defaults are as they were.
+- Mac Catalyst 15 and later: an iPad app built for the Mac is a Mac to the SDK. It reads the Mac's
+  `IOPlatformUUID`, as a Mac app does (no Keychain install id, which on a Mac would need a provisioning
+  profile), keeps its state where a Mac app does, and has no default trial stash. A native Mac build and a
+  Catalyst build of one product on one Mac are one device.
+- `DefaultFingerprinter(product:)` is the default fingerprinter a `License` makes, and the one to wrap; on a Mac
+  and on Linux it is the same as `DefaultFingerprinter()`, which iOS does not offer (the install id is the
+  product's).
+- The package ships a privacy manifest (`PrivacyInfo.xcprivacy`) for the App Store: no tracking; a device id,
+  an email address when the app passes one, and product interaction (a running trial's launch report, metered
+  uses), sent for the app's licensing and its trial figures; and why it reads file dates (C617.1) and the time
+  since the device started (35F9.1).
+
 ## 0.8.1
 
 - Documentation only, no code change: selling through Paddle, the upgrade link is your own checkout page,

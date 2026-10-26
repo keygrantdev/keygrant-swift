@@ -60,7 +60,7 @@ func deviceFrom(
 
 /// Reads, and once settled keeps, who this device is.
 final class DeviceIdentityReader: Sendable {
-    private let fingerprinter: any Fingerprinter
+    let fingerprinter: any Fingerprinter
     /// How much longer than its own bound a fingerprinter's `identify` is given.
     private let slack: TimeInterval
     /// What the bounds are kept by.

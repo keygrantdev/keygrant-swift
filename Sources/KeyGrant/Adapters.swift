@@ -28,18 +28,31 @@ extension StorageAdapter {
 }
 
 /// A trial start kept where it survives the app being deleted (the Windows registry, the
-/// Keychain: `KeychainTrialStash`), so a reinstall cannot restart a trial. The default keeps nothing.
+/// Keychain: `KeychainTrialStash`), so a reinstall cannot restart a trial. The default keeps nothing,
+/// except on iOS and iPadOS, where it is the Keychain (`defaultRegistry(product:)`).
 public protocol RegistryStash: Sendable {
     /// The trial start stashed (ms since 1970), or nil for none.
     func readTrialStart() async throws -> Int?
     func writeTrialStart(_ ms: Int) async throws
 }
 
-/// The default registry stash: keeps nothing.
+/// The default registry stash on a Mac and on Linux: keeps nothing.
 public struct NoRegistryStash: RegistryStash {
     public init() {}
     public func readTrialStart() async throws -> Int? { nil }
     public func writeTrialStart(_ ms: Int) async throws {}
+}
+
+/// The registry stash a licence keeps where the app gives none: the Keychain on iOS and iPadOS
+/// (contract 4.1), which every app there may use without asking; nothing elsewhere, the Mac's data
+/// protection keychain (a Mac Catalyst app's too) needing an entitlement not every app has, and Linux
+/// having none.
+func defaultRegistry(product: String) -> any RegistryStash {
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    return KeychainTrialStash(product: product)
+    #else
+    return NoRegistryStash()
+    #endif
 }
 
 /// The device's wall clock. (Not named `Clock`: the standard library's `Clock` protocol would be
@@ -111,11 +124,11 @@ public protocol HTTPAdapter: Sendable {
 public struct LicenseAdapters: Sendable {
     /// Default: `FileStorage` at `FileStorage.defaultPath(product:)`.
     public var storage: (any StorageAdapter)?
-    /// Default: `NoRegistryStash`.
+    /// Default: `NoRegistryStash`; on iOS and iPadOS, `KeychainTrialStash`.
     public var registry: (any RegistryStash)?
     /// Default: `SystemClock`.
     public var clock: (any LicenseClock)?
-    /// Default: `DefaultFingerprinter`.
+    /// Default: `DefaultFingerprinter(product:)`.
     public var fingerprinter: (any Fingerprinter)?
     /// Default: `URLSessionHTTP`.
     public var http: (any HTTPAdapter)?

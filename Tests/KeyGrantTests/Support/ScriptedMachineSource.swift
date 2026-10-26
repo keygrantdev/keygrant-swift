@@ -3,7 +3,8 @@ import Foundation
 @testable import KeyGrant
 
 /// A machine-id source a test scripts: each file's text or failure (unlisted: `ENOENT`) and when
-/// it was written; on macOS, what IOKit gives for the platform expert's UUID.
+/// it was written; on macOS, what IOKit gives for the platform expert's UUID; on iOS, what the
+/// Keychain gives for the install id.
 struct ScriptedMachineSource: MachineIdSource {
     enum File: Sendable {
         case text(String, mtimeMs: Double? = nil)
@@ -15,7 +16,8 @@ struct ScriptedMachineSource: MachineIdSource {
         case hang
     }
 
-    enum PlatformUUID: Sendable {
+    /// What one read of an id answers: the id (nil: none), a failure, or nothing at all.
+    enum Answer: Sendable {
         case value(String?)
         case failure(Error & Sendable)
         case hang
@@ -24,17 +26,28 @@ struct ScriptedMachineSource: MachineIdSource {
     var platform: String
     var files: [String: File] = [:]
     /// What `platformUUID()` answers, in turn; the last answer repeats.
-    var uuids: [PlatformUUID] = [.value(nil)]
+    var uuids: [Answer] = [.value(nil)]
+    /// What `installId()` answers, in turn; the last answer repeats.
+    var installIds: [Answer] = [.value(nil)]
     /// How many `platformUUID()` calls were made (shared, so a copy counts too).
     let reads = Counter()
+    /// How many `installId()` calls were made (shared, so a copy counts too).
+    let installReads = Counter()
 
     struct Odd: Error {}
 
     func platformUUID() async throws -> String? {
-        let call = reads.next()
-        let answer = uuids[min(call, uuids.count) - 1]
-        switch answer {
-        case .value(let uuid): return uuid
+        try await answer(uuids, call: reads.next())
+    }
+
+    func installId() async throws -> String? {
+        try await answer(installIds, call: installReads.next())
+    }
+
+    /// The answer of call number `call` (from 1) of `script`.
+    private func answer(_ script: [Answer], call: Int) async throws -> String? {
+        switch script[min(call, script.count) - 1] {
+        case .value(let id): return id
         case .failure(let error): throw error
         case .hang:
             try await Task.sleep(nanoseconds: hangNanoseconds)
@@ -73,6 +86,11 @@ func linuxMachine(id: String = "a1b2c3d4e5f6\n", more: [String: ScriptedMachineS
 }
 
 /// A Mac whose IOKit read answers `uuids` in turn.
-func mac(_ uuids: ScriptedMachineSource.PlatformUUID...) -> ScriptedMachineSource {
+func mac(_ uuids: ScriptedMachineSource.Answer...) -> ScriptedMachineSource {
     ScriptedMachineSource(platform: "darwin", uuids: uuids.isEmpty ? [.value(nil)] : uuids)
+}
+
+/// An iPhone or iPad whose Keychain read of its install id answers `ids` in turn.
+func iPhone(_ ids: ScriptedMachineSource.Answer...) -> ScriptedMachineSource {
+    ScriptedMachineSource(platform: "ios", installIds: ids.isEmpty ? [.value(nil)] : ids)
 }

@@ -56,12 +56,16 @@ public final class FileStorage: StorageAdapter {
 
     /// Where the default storage keeps a product's state: a folder of this user's on THIS machine,
     /// never the working directory and never one that roams between machines.
-    ///  - macOS: `~/Library/Application Support/KeyGrant/<product>.json`. In a sandboxed app the
-    ///    home folder is the app's container, so the file is inside the container.
+    ///  - macOS (a Mac Catalyst app's included): `~/Library/Application Support/KeyGrant/<product>.json`.
+    ///    In a sandboxed app the home folder is the app's container, so the file is inside the container.
+    ///  - iOS and iPadOS: the same under the app's container (`NSHomeDirectory()`, which in the
+    ///    Simulator is the container where `HOME` may not be): its Application Support folder
+    ///    (contract section 6).
     ///  - Linux and others: `$XDG_CONFIG_HOME/keygrant/<product>.json`, else `~/.config/keygrant/...`.
-    /// Read from the environment as it is when called (`HOME`, else the user's home folder).
+    /// Read from the environment as it is when called (`storageHome`: `HOME`, else the user's home
+    /// folder; on iOS and iPadOS, the container).
     public static func defaultPath(product: String) -> String {
-        let home = POSIX.environment("HOME").flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+        let home = storageHome(platform: nodePlatform, home: POSIX.environment("HOME"))
         var environment: [String: String] = [:]
         if let configured = POSIX.environment("XDG_CONFIG_HOME") { environment["XDG_CONFIG_HOME"] = configured }
         return defaultStoragePath(product: product, platform: nodePlatform, home: home, environment: environment)
@@ -178,11 +182,20 @@ func revisionOf(_ text: String?) -> Revision {
     return .rev(StoredState(json: json).rev)
 }
 
+/// The home folder the default storage is under, for a platform (Node's name) and `$HOME` (`home`,
+/// nil when unset): `$HOME` unless it is empty, else the user's home folder (`NSHomeDirectory()`);
+/// on iOS and iPadOS always the app's container, `NSHomeDirectory()`, which in the Simulator is the
+/// container where `$HOME` may not be.
+func storageHome(platform: String, home: String?) -> String {
+    if platform == "ios" { return NSHomeDirectory() }
+    return home.flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+}
+
 /// Where the default storage keeps a product's state, for a platform (Node's name), a home folder
 /// and an environment. An empty or relative `$XDG_CONFIG_HOME` is taken as unset, as the XDG spec says.
 func defaultStoragePath(product: String, platform: String, home: String, environment: [String: String]) -> String {
     let file = "\(product).json"
-    if platform == "darwin" {
+    if platform == "darwin" || platform == "ios" {
         return joinPath(joinPath(joinPath(joinPath(home, "Library"), "Application Support"), "KeyGrant"), file)
     }
     let configured = environment["XDG_CONFIG_HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil }

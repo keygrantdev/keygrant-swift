@@ -1,6 +1,7 @@
 # KeyGrant for Swift
 
-Client-side licensing for macOS apps (SwiftUI or AppKit), and Linux. A port of the reference
+Client-side licensing for macOS apps (SwiftUI or AppKit), iPhone and iPad apps (SwiftUI or UIKit),
+Mac Catalyst apps, and Linux. A port of the reference
 Electron SDK (`@keygrant/electron`), held to the same behaviour by the shared conformance vectors
 (`conformance/vectors.json`). The full guide is at https://keygrant.dev/docs.
 
@@ -14,7 +15,8 @@ answer the SDK cannot use never takes away a lease that is still valid. Only an 
 from the server, or the lease's own end, does.
 
 - Swift 6 language mode (strict concurrency), Swift 6 toolchain (Xcode 16 or later).
-- macOS 12 or later, and Linux.
+- macOS 12 or later, iOS and iPadOS 15 or later ([iPhone and iPad](#iphone-and-ipad)), Mac Catalyst 15 or
+  later, and Linux.
 - One dependency: [`apple/swift-crypto`](https://github.com/apple/swift-crypto), which is
   CryptoKit itself on Apple platforms.
 
@@ -24,7 +26,7 @@ Add the package by its URL. In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.8.0"),
+    .package(url: "https://github.com/keygrantdev/keygrant-swift.git", from: "0.9.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "KeyGrant", package: "keygrant-swift")]),
@@ -400,6 +402,11 @@ func buy() {
 }
 ```
 
+On iPhone and iPad, and in a Mac Catalyst app (which has UIKit, not AppKit),
+`UIApplication.shared.open(paymentLink)` opens it, where the App Store's rules let an app link to a
+purchase made outside it; a build that may not restores a web buyer's licence by
+[key pickup](#restoring-a-licence-without-the-key-app-store-builds) instead.
+
 For a customer who already holds a key, `upgradeURL(paymentLink:)` adds this install's activation to
 the link, so an upgrade sale finds the key it upgrades.
 
@@ -451,18 +458,31 @@ fingerprint is the operating system's machine id, hashed so it never leaves the 
 
 - **macOS:** the platform expert's `IOPlatformUUID`, read in-process through IOKit (no
   `/usr/sbin/ioreg` subprocess, which a sandboxed Mac App Store app cannot launch). It is the
-  same UUID the Electron SDK reads, so a Mac has the same fingerprint under either SDK.
+  same UUID the Electron SDK reads, so a Mac has the same fingerprint under either SDK. A Mac
+  Catalyst app reads it too: it runs on a Mac, and in everything the SDK decides (its
+  fingerprint, its state file, its defaults) it is a Mac app. A native Mac build and a Catalyst
+  build of one product on one Mac are one device: one seat and one trial, so releasing the seat
+  from either releases it for both. An iOS app running unmodified on a Mac ("Designed for iPad")
+  is an iOS app, identified by its install id.
+- **iOS and iPadOS:** an app may read no id of the device, so the SDK keeps an install id of its
+  own in the Keychain (service `dev.keygrant.install`, account the product slug), written at the
+  first launch from `identifierForVendor`. It is kept on this device only: neither iCloud Keychain
+  nor a backup restored onto another device carries it. It survives the app being deleted and
+  installed again, so a reinstall is the same device and takes no second seat.
 - **Linux:** `/etc/machine-id`, else `/var/lib/dbus/machine-id`; an id on a filesystem in memory
   (tmpfs, ramfs) or written at this boot counts as none.
 
-A machine with no id falls back to its host name. A device is never refused because a read was
-slow: a read that does not finish in time means "cannot tell", and nothing is judged. The id is
-read once per process, whatever number of `License`s it has.
+A Mac or Linux machine with no id falls back to its host name; an iPhone or iPad, which has no host
+name worth the name, never does. A device is never refused because a read was slow: a read that does
+not finish in time means "cannot tell", and nothing is judged. The id is read once per process,
+whatever number of `License`s it has (once per product on iOS and iPadOS).
 
 `deviceHold: false` is for non-persistent pooled VDI, where every session may be another
 machine: no lease is then judged by its device and the server is told no fingerprints (the device
 limit still counts seats). A custom `Fingerprinter` that only implements `get()` is never held to
-its device; implement `identify(timeout:)` and report `kind: .machine` for a stable machine id.
+its device; implement `identify(timeout:)` and report `kind: .machine` for a stable machine id. One
+that wraps the default makes it with `DefaultFingerprinter(product:)` (on iOS and iPadOS,
+`DefaultFingerprinter()` is unavailable: the install id is the product's).
 
 ## Test licences
 
@@ -592,10 +612,13 @@ One JSON file per product, per user, on this machine:
   That is fine: it is still per user and machine-local. (A non-sandboxed Mac app uses the same
   path the Electron SDK does, so an app moving from Electron to Swift keeps its licence; a
   sandboxed one cannot see that file.)
+- **iOS and iPadOS:** the same path, in the app's container:
+  `Library/Application Support/KeyGrant/<product>.json`.
 - **Linux:** `$XDG_CONFIG_HOME/keygrant/<product>.json`, else `~/.config/keygrant/<product>.json`.
 
 The home folder is `$HOME` as the process has it when the `License` is made, else the user's
-home folder. The file has the same field names as every KeyGrant SDK's, so it is portable between
+home folder; on iOS and iPadOS it is always the app's container (`NSHomeDirectory()`, the
+container in the Simulator too). The file has the same field names as every KeyGrant SDK's, so it is portable between
 them. It is written atomically (a temp file flushed to the disk, `F_FULLFSYNC` on macOS, then
 renamed over the file), readable by this user only; two instances of the app saving at once
 never lose each other's fields (a revision stamp is checked just before the rename and the save
@@ -638,7 +661,8 @@ verify is the answer. Otherwise the trial reads as expired, and `status()` waits
 again: a minute when nothing answered, an hour when the server did. `refresh()` asks whatever the
 wait; a call behind one that has not finished never asks.
 
-To make a reinstall unable to restart a trial, give a registry stash that outlives the app:
+To make a reinstall unable to restart a trial, give a registry stash that outlives the app (on iOS
+and iPadOS it is the default, kept on this device only):
 
 ```swift
 adapters: LicenseAdapters(registry: KeychainTrialStash(product: "sluice"))
@@ -647,11 +671,46 @@ adapters: LicenseAdapters(registry: KeychainTrialStash(product: "sluice"))
 `KeychainTrialStash` keeps the start in a generic-password Keychain item, which survives the app
 being deleted. By default it uses the data protection keychain, which never prompts but needs an
 app with an application identifier (any App Store app, or one with a provisioning profile);
-`keychain: .login` works for any app but may prompt when a differently signed build (an ad-hoc
-development build) reads the item. It writes only on what it read: it adds the item when there
-is none, replaces it only with an earlier start, and leaves alone an item it cannot read (a
-locked keychain), whose start nobody could see. A stash that cannot be read or written costs
+`keychain: .login` works for any native Mac app but may prompt when a differently signed build (an
+ad-hoc development build) reads the item. A Mac Catalyst app has only the data protection keychain,
+whichever you pass, so there the stash needs an application identifier, and without one it stores
+nothing. It writes only on what it read: it adds the item when there is none, replaces it only
+with an earlier start, and leaves alone an item it cannot read (a locked keychain), whose start
+nobody could see. A stash that cannot be read or written costs
 nothing: the trial falls back on the server's record and the state file.
+
+## iPhone and iPad
+
+The API is the same on iOS and iPadOS 15 and later. The same app built for the Mac with Mac
+Catalyst is a Mac to the SDK: who the device is, the state file and trials below are a Mac's for
+it, and the selling and privacy manifest notes apply to it as to an iPad. What
+differs on iPhone and iPad:
+
+- **Who the device is:** an install id the SDK keeps in the Keychain
+  ([Holding a licence to its device](#holding-a-licence-to-its-device)), never a host name. When it
+  cannot be read (the Keychain is shut until the first unlock after the device restarts), the run
+  cannot tell who it is: a valid lease keeps the app licensed, and an activation answers `network`,
+  to try again once the device is unlocked.
+- **The state file** is in the app's container ([Where the state is kept](#where-the-state-is-kept))
+  and goes into the device's backups. Restored onto another iPhone, it names a seat held to the old
+  one: `status()` answers `.invalid`/`.device`, and the customer activates again there (with the key,
+  or by key pickup). The old seat is released from the customer portal or the dashboard. Before the
+  first unlock after a restart the file cannot be read either: `status()` answers
+  `.unknown`/`.storage`, never `.unlicensed`.
+- **Trials:** the Keychain stash is the default ([Trials and the Keychain](#trials-and-the-keychain)).
+- **App extensions:** a widget, share or intents extension is a process of its own, with a
+  Keychain of its own: a `License` made there reads an install id of its own and takes a seat of
+  its own. Check the licence in the app and hand the answer to its extensions (through an app
+  group, say).
+- **Selling:** an App Store build that may not take a typed licence key restores a web buyer's
+  licence by [key pickup](#restoring-a-licence-without-the-key-app-store-builds).
+- **The privacy manifest:** the package ships `PrivacyInfo.xcprivacy`, which Xcode puts in the
+  app's privacy report: no tracking; a device id, an email address when the app passes one (a
+  user-locked key, key pickup), and product interaction (a running trial's daily launch report,
+  for the trial figures; metered uses spent), sent for the app's licensing and linked to the
+  licence; and the reasons it reads file dates (its own state files, C617.1) and the time since the
+  device started (its time bounds, 35F9.1). A `deviceName` the app passes is the app's to declare,
+  and your App Store privacy answers cover what your app sends as a whole.
 
 ## Networking and the App Sandbox
 
@@ -697,6 +756,19 @@ hand, not raced against a real one. Every suite has a time limit of a minute (on
 macOS 13 or later: Swift Testing keeps none on macOS 12); since a limit ends only what heeds
 cancellation, the tests' own waits on the SDK also fail after 20 seconds of real time rather than
 hang.
+
+The tests run on macOS and Linux. The iOS rules are tested there on stand-ins for the Keychain; the
+code that calls the Keychain and UIKit itself compiles only for iOS:
+
+```sh
+xcodebuild build -scheme KeyGrant -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO
+```
+
+On a Mac, the suite also runs as a Mac Catalyst test process (not in a sandboxed app):
+
+```sh
+xcodebuild test -scheme KeyGrant -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGN_IDENTITY=-
+```
 
 ## Parity with the reference
 
@@ -795,9 +867,13 @@ apart from one left alone (absent). Where this SDK differs from the reference El
 - **The default HTTP adapter bounds the whole request** itself (`URLRequest.timeoutInterval` is an
   idle timeout, and Linux's `URLSession` does not keep even that). The product slug is
   percent-encoded in the path (no change for a slug).
-- **`KeychainTrialStash`** (the macOS analogue of the Windows registry stash an Electron app
+- **`KeychainTrialStash`** (the Apple analogue of the Windows registry stash an Electron app
   injects) only ever moves the stashed start earlier, and writes nothing over an item it cannot
   read.
+- **iOS and iPadOS** have no reference (Electron runs on neither): the SDK follows the SDK
+  contract's rules for phones and tablets, which the Dart SDK's Flutter plugin follows on iOS too
+  (the same Keychain items, the same `machine-id|ios:<id>` fingerprint). They have no conformance
+  vectors; this package's suite pins them.
 - **Strings are compared unit for unit**, as JavaScript's `===` does, not by Swift's canonical
   equivalence, so a key, product or activation id matches exactly when the reference's would, and
   an `Entitlement` text equals another exactly when the reference's would.

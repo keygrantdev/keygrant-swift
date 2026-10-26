@@ -170,14 +170,23 @@ struct FailingRegistry: RegistryStash {
     func writeTrialStart(_ ms: Int) async throws { throw Failure() }
 }
 
-/// A stash item in memory (a Keychain item's stand-in): its data, a read that fails when told to,
-/// and every add and update made.
+/// A stash item in memory (a Keychain item's stand-in): its data, reads or writes that fail when
+/// told to, and every add and update made.
 final class MemoryStashItem: StashItem {
     struct Unreadable: Error {}
+    struct Refused: Error {}
 
     private struct State {
         var data: Data?
         var unreadable = false
+        /// How many more reads answer before every read fails; nil: no limit.
+        var readsLeft: Int?
+        var reads = 0
+        /// What every read waits on before it answers: a Keychain call that hangs.
+        var held: Gate?
+        var writesRefused = false
+        /// What lands in the item as a write is refused: another writer's, there first.
+        var landsFirst: String?
         var writes: [String] = []
     }
 
@@ -190,24 +199,57 @@ final class MemoryStashItem: StashItem {
     var text: String? { state.current.data.map { String(decoding: $0, as: UTF8.self) } }
     /// Every write, in order: `add <text>` or `update <text>`.
     var writes: [String] { state.current.writes }
-    func failReads(_ on: Bool = true) { state.withValue { $0.unreadable = on } }
+    /// How many reads were made, those that failed included.
+    var reads: Int { state.current.reads }
+    func failReads(_ on: Bool = true) {
+        state.withValue { state in
+            state.unreadable = on
+            state.readsLeft = nil
+        }
+    }
+    /// The next `count` reads answer, and every read after them fails (`Unreadable`).
+    func failReads(after count: Int) { state.withValue { $0.readsLeft = count } }
+    /// Every read waits for `gate` to open before it answers.
+    func holdReads(until gate: Gate) { state.withValue { $0.held = gate } }
+    /// Every add and update fails (`Refused`) while `on`, as a locked Keychain's do; `other`, when
+    /// given, is put in the item as a write fails: another writer's item, there first, as the
+    /// Keychain's add finds one.
+    func refuseWrites(_ on: Bool = true, landing other: String? = nil) {
+        state.withValue { state in
+            state.writesRefused = on
+            state.landsFirst = other
+        }
+    }
 
     func data() async throws -> Data? {
-        let (unreadable, data) = state.withValue { ($0.unreadable, $0.data) }
+        if let gate = state.current.held { await gate.wait() }
+        let (unreadable, data) = state.withValue { state -> (Bool, Data?) in
+            state.reads += 1
+            if let left = state.readsLeft {
+                if left == 0 { return (true, nil) }
+                state.readsLeft = left - 1
+            }
+            return (state.unreadable, state.data)
+        }
         if unreadable { throw Unreadable() }
         return data
     }
 
     func add(_ data: Data) async throws {
-        state.withValue { state in
-            state.writes.append("add \(String(decoding: data, as: UTF8.self))")
-            state.data = data
-        }
+        try write("add", data)
     }
 
     func update(_ data: Data) async throws {
-        state.withValue { state in
-            state.writes.append("update \(String(decoding: data, as: UTF8.self))")
+        try write("update", data)
+    }
+
+    private func write(_ kind: String, _ data: Data) throws {
+        try state.withValue { state in
+            if state.writesRefused {
+                if let other = state.landsFirst { state.data = Data(other.utf8) }
+                throw Refused()
+            }
+            state.writes.append("\(kind) \(String(decoding: data, as: UTF8.self))")
             state.data = data
         }
     }

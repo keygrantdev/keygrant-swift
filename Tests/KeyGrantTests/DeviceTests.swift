@@ -131,6 +131,74 @@ struct DeviceIdentityTests {
         #expect(h.stored?.deviceKind == .machine)
     }
 
+    /// A phone whose Keychain cannot be read this time (a device locked since it started), and its
+    /// source, which counts the reads.
+    func lockedPhone() throws -> (h: Harness, source: ScriptedMachineSource) {
+        let source = iPhone(.failure(ScriptedMachineSource.Odd()))
+        return (try Harness(fingerprinter: DefaultFingerprinter(source: source), timing: quick), source)
+    }
+
+    @Test func activatesAnIPhoneUnderItsInstallIdAloneAndNeverUnderAHostName() async throws {
+        // The id cannot be read this time: nothing to activate under.
+        let (locked, keychain) = try lockedPhone()
+        #expect(await locked.license.activate(KEY) == .failed(.network))
+        #expect(!locked.http.called("activate") && keychain.installReads.count > 0)
+        // It reads: the seat is keyed by it, and a renewal tells the server it and nothing else.
+        let h = try Harness(fingerprinter: DefaultFingerprinter(source: iPhone(.value(INSTALL_ID))))
+        h.http.on("activate", status: 200, json: ["lease": .string(lease(h, PHONE)), "activationId": "act_1"])
+        #expect(await h.license.activate(KEY) == .activated)
+        #expect(h.http.body("activate")?["fingerprint"]?.stringValue == PHONE)
+        #expect(h.http.body("activate")?["fingerprintKind"] == "machine")
+        #expect(h.stored?.deviceKind == .machine)
+        h.http.on("validate", status: 200, json: ["lease": .string(lease(h, PHONE)), "activationId": "act_1"])
+        #expect(await h.license.refresh() == LicenseStatus(state: .licensed, key: KEY))
+        #expect(h.http.body("validate")?["fingerprints"] == .array([.string(PHONE)]))
+        #expect(h.http.body("validate")?["fingerprintKind"] == "machine")
+    }
+
+    @Test func keepsAnIPhoneLicensedAndTellsTheServerNothingWhileItsIdCannotBeRead() async throws {
+        let (h, keychain) = try lockedPhone()
+        licensed(h, lease(h, PHONE), deviceKind: .machine)
+        h.http.setFail(true)
+        #expect(await h.license.status() == LicenseStatus(state: .licensed, key: KEY))
+        h.http.setFail(false)
+        h.http.on("validate", status: 200, json: ["lease": .string(lease(h, PHONE)), "activationId": "act_1"])
+        #expect(await h.license.refresh() == LicenseStatus(state: .licensed, key: KEY))
+        #expect(h.http.body("validate")?.has("fingerprints") == false)
+        #expect(keychain.installReads.count > 0)
+    }
+
+    @Test func readsAStateRestoredOntoAnotherIPhoneAsAnotherDeviceUntilItActivatesThere() async throws {
+        // A backup restored onto a new phone brings the state file, never the install id.
+        let newPhone = machineFingerprint("ios:9B2A44C0-1D3E-4F5A-8B6C-7D8E9F0A1B2C")
+        let h = try Harness(fingerprinter: DefaultFingerprinter(source: iPhone(.value("9B2A44C0-1D3E-4F5A-8B6C-7D8E9F0A1B2C"))))
+        licensed(h, lease(h, PHONE), deviceKind: .machine)
+        h.http.setFail(true)
+        #expect(await h.license.status() == LicenseStatus(state: .invalid, reason: .device, key: KEY))
+        // The customer activates again there: a seat of its own.
+        h.http.setFail(false)
+        let held = h.signer.lease(aid: "act_2", fp: fingerprintClaim(newPhone), fpk: .machine)
+        h.http.on("activate", status: 200, json: ["lease": .string(held), "activationId": "act_2"])
+        #expect(await h.license.activate(KEY) == .activated)
+        #expect(h.http.body("activate")?["fingerprint"]?.stringValue == newPhone)
+        #expect(h.stored?.activationId == "act_2" && h.stored?.deviceKind == .machine)
+        h.http.setFail(true)
+        #expect(await h.license.status() == LicenseStatus(state: .licensed, key: KEY))
+    }
+
+    @Test func startsAnIPhonesTrialUnderItsInstallIdAndNoneWhileItCannotBeRead() async throws {
+        let (locked, keychain) = try lockedPhone()
+        #expect(await locked.license.startTrial().state != .trial)
+        #expect(!locked.http.called("trial") && keychain.installReads.count > 0)
+        let h = try Harness(fingerprinter: DefaultFingerprinter(source: iPhone(.value(INSTALL_ID))))
+        let trialLease = h.signer.trialLease(device: PHONE, ttlSeconds: 5 * 24 * 3600)
+        h.http.on("trial", status: 200, json: [
+            "trialStart": .number(Double(NOW)), "trialEndsAt": .number(Double(NOW + 5 * DAY)), "lease": .string(trialLease),
+        ])
+        #expect(await h.license.startTrial().state == .trial)
+        #expect(h.http.body("trial") == ["fingerprint": .string(PHONE), "fingerprintKind": "machine"])
+    }
+
     @Test func neverReactivatesTheSeatAMachineIdKeyedUnderTheHostName() async throws {
         let h = try Harness(StoredState(key: KEY, activationId: "act_1", lastSeen: NOW, deviceKind: .machine),
                             fingerprinter: DefaultFingerprinter(source: mac(.hang, .value(UUID_))), timing: quick)
@@ -293,8 +361,8 @@ struct DeviceIdentityTests {
         #expect(h.stored?.lease == held && h.stored?.deviceKind == .machine)
     }
 
-    @Test(arguments: [ScriptedMachineSource.PlatformUUID.value(UUID_), .value(nil)])
-    func doesNotRefuseAHostNameKeyedSeat(read: ScriptedMachineSource.PlatformUUID) async throws {
+    @Test(arguments: [ScriptedMachineSource.Answer.value(UUID_), .value(nil)])
+    func doesNotRefuseAHostNameKeyedSeat(read: ScriptedMachineSource.Answer) async throws {
         // Activated under a host name this machine no longer has (renamed, or an x64 build under
         // Rosetta moved to arm64).
         let h = try Harness(fingerprinter: DefaultFingerprinter(source: mac(read)))

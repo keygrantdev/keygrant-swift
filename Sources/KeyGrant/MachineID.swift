@@ -6,13 +6,16 @@ import Foundation
 ///  - macOS: `IOPlatformUUID` of the platform expert device, read in-process through IOKit (the
 ///    value `/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice` prints, which a sandboxed app could
 ///    not run), so a Mac has the same fingerprint here as under the Electron SDK.
+///  - iOS and iPadOS: no id an app may read, so an install id the SDK keeps in the Keychain
+///    (`InstallId`, contract 4.1).
 ///  - Linux (and anything else): `/etc/machine-id`, else `/var/lib/dbus/machine-id`.
 ///
 /// What a read gives is one of three, and the difference keeps a device's identity from ever
 /// changing because a read was slow:
 ///  - `id`: the machine's id.
 ///  - `unavailable`: there is none to read, and there will not be on the next try either. The
-///    fingerprint falls back to the host name, consistently.
+///    fingerprint falls back to the host name, consistently. Never on iOS and iPadOS, where there
+///    is no host name worth the name to fall back on.
 ///  - `transient`: the read did not finish (a timeout, an error nobody expected). There is NO
 ///    fingerprint this time, and the next call reads again.
 enum MachineIdReading: Sendable, Hashable {
@@ -23,10 +26,14 @@ enum MachineIdReading: Sendable, Hashable {
 
 /// Where the machine id is read from: the real system, or a stand-in in tests.
 protocol MachineIdSource: Sendable {
-    /// Node's name for the platform: `darwin`, `linux`, ...
+    /// Node's name for the platform: `darwin`, `linux`, ... (`ios` for iOS and iPadOS, which Node
+    /// does not run on).
     var platform: String { get }
     /// macOS: the platform expert's `IOPlatformUUID`, or nil when there is none.
     func platformUUID() async throws -> String?
+    /// iOS and iPadOS: this install's id (`InstallId`), written the first time it is read; nil when
+    /// there is none.
+    func installId() async throws -> String?
     /// A file's text. Throws a `StorageError` with an errno `code` (`ENOENT`, `EACCES`) when it cannot be read.
     func readFile(_ path: String) async throws -> String
     /// When a file's content was last written (ms since 1970); nil when the source cannot say,
@@ -60,6 +67,15 @@ func readMachineId(
             return idIn(uuid)
         } catch {
             return failureKind(error)
+        }
+    }
+    if source.platform == "ios" {
+        // Nothing to fall back on (contract 4.1): the install id, or none this time.
+        do {
+            guard let id = try await bound.run({ try await source.installId() }), !id.isEmpty else { return .transient }
+            return .id(id)
+        } catch {
+            return .transient
         }
     }
     // An id on a filesystem in memory is new every boot: no id to hold a device to.

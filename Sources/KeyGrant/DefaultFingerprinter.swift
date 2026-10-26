@@ -10,26 +10,41 @@ import Musl
 
 /// The default fingerprinter: the operating system's machine id (`IOPlatformUUID` on macOS,
 /// `/etc/machine-id` on Linux), hashed so the raw id never leaves the machine; the host name's
-/// when the machine has no id to read, and `identify` says which (`kind`). A read that did not
-/// finish gives NO fingerprint and is not kept, so the next call reads again: a device's
-/// fingerprint never changes with how fast a read was. A settled fingerprint is kept for the
-/// process, shared by every default fingerprinter in it.
+/// when the machine has no id to read, and `identify` says which (`kind`). On iOS and iPadOS, an
+/// install id kept in the Keychain for the product, and never a host name (contract 4.1); a Mac
+/// Catalyst app runs on a Mac, and reads the Mac's id as a Mac app does. A read
+/// that did not finish gives NO fingerprint and is not kept, so the next call reads again: a
+/// device's fingerprint never changes with how fast a read was. A settled fingerprint is kept for
+/// the process, shared by every default fingerprinter in it (of the product, on iOS and iPadOS).
 ///
 /// `get()` waits as long as an activation does and THROWS when the id still could not be read;
 /// the SDK itself uses `identify`. A wrapper around this fingerprinter should delegate `identify`,
 /// to keep the kind and the host-name alternate.
 public final class DefaultFingerprinter: Fingerprinter {
     /// Where the id is read from.
-    private let source: any MachineIdSource
+    let source: any MachineIdSource
     /// Where the fingerprint it settles on is kept.
-    private let cache: FingerprintCache
+    let cache: FingerprintCache
     /// What the bound on a read is kept by.
     private let ticker: any Ticker
 
-    public init() {
-        source = SystemMachineIdSource()
-        cache = .process
-        ticker = SystemTicker()
+    /// The default fingerprinter for `product`, the one a `License` uses: on iOS and iPadOS it reads
+    /// the product's own install id; elsewhere the machine's id, whatever the product.
+    public convenience init(product: String) {
+        self.init(product: product, platform: nodePlatform)
+    }
+
+    /// As `init(product:)`, its cache the one `platform` shares (`FingerprintCache.shared`).
+    convenience init(product: String, platform: String) {
+        self.init(source: SystemMachineIdSource(product: product), cache: .shared(product: product, platform: platform))
+    }
+
+    /// The default fingerprinter on a Mac (a Mac Catalyst app's included) or on Linux, where the
+    /// machine's id is the same for every product.
+    @available(iOS, unavailable, message: "an iPhone or iPad keeps an install id per product: use DefaultFingerprinter(product:)")
+    @available(macCatalyst, introduced: 15.0)
+    public convenience init() {
+        self.init(source: SystemMachineIdSource(), cache: .process)
     }
 
     /// A fingerprinter reading `source`, keeping what it settles on in `cache` (one of its own
@@ -48,11 +63,19 @@ public final class DefaultFingerprinter: Fingerprinter {
     }
 
     /// As `identityOf`, with the settled fingerprint kept: the host name's alternate is this
-    /// call's, the fingerprint the one first settled on.
+    /// call's, the fingerprint the one first settled on. On iOS and iPadOS, as `phoneIdentityOf`.
     public func identify(timeout: TimeInterval) async throws -> DeviceIdentity {
+        if source.platform == "ios" {
+            if let settled = cache.settled { return DeviceIdentity(fingerprint: settled.fingerprint, kind: settled.kind) }
+            return kept(phoneIdentityOf(await readMachineId(source, timeout: timeout, on: ticker)))
+        }
         let host = hostNames()
         if let settled = cache.settled { return withHostAlternate(settled, legacy: hostNamesFingerprint(host)) }
-        let identity = identityOf(await readMachineId(source, timeout: timeout, on: ticker), host: host)
+        return kept(identityOf(await readMachineId(source, timeout: timeout, on: ticker), host: host))
+    }
+
+    /// `identity`, its fingerprint kept when it settled on one.
+    private func kept(_ identity: DeviceIdentity) -> DeviceIdentity {
         if let fingerprint = identity.fingerprint, let kind = identity.kind {
             cache.keep(Settled(fingerprint: fingerprint, kind: kind))
         }
@@ -67,10 +90,26 @@ struct Settled: Sendable, Hashable {
 }
 
 /// Where a default fingerprinter keeps the fingerprint it settled on: the process's own
-/// (`process`, shared by every `DefaultFingerprinter()`, so the id is read once per process), or
-/// one of a test's.
+/// (`process`, shared by every `DefaultFingerprinter()`, so the id is read once per process), a
+/// product's on iOS and iPadOS (`shared(product:)`), or one of a test's.
 final class FingerprintCache: Sendable {
     static let process = FingerprintCache()
+
+    /// The cache every `DefaultFingerprinter(product:)` of `product` shares: `process`, a machine
+    /// having one id whatever the product, except on iOS and iPadOS (`platform` `ios`), where each
+    /// product keeps an install id of its own, and so a cache of its own.
+    static func shared(product: String, platform: String = nodePlatform) -> FingerprintCache {
+        guard platform == "ios" else { return .process }
+        return products.withValue { caches in
+            if let cache = caches[product] { return cache }
+            let cache = FingerprintCache()
+            caches[product] = cache
+            return cache
+        }
+    }
+
+    /// Each product's cache on iOS and iPadOS.
+    private static let products = Locked<[String: FingerprintCache]>([:])
 
     private let value = Locked<Settled?>(nil)
 
@@ -92,6 +131,14 @@ final class FingerprintCache: Sendable {
 func identityOf(_ reading: MachineIdReading, host: HostNames?) -> DeviceIdentity {
     let legacy = hostNamesFingerprint(host)
     return withHostAlternate(settledOn(reading, hostFingerprint: legacy), legacy: legacy)
+}
+
+/// Who an iPhone or iPad is (contract 4.1), from a reading of its install id: the id's fingerprint
+/// (`machine-id|ios:<id>`), kind `machine`, with no alternate, a phone having no host name worth
+/// the name; anything else is no fingerprint this time, and no alternate.
+func phoneIdentityOf(_ reading: MachineIdReading) -> DeviceIdentity {
+    guard case .id(let id) = reading else { return DeviceIdentity(fingerprint: nil) }
+    return DeviceIdentity(fingerprint: machineFingerprint("ios:" + id), kind: .machine)
 }
 
 /// What a reading of the machine id settles on: its fingerprint; the host name's when there is no
@@ -205,9 +252,10 @@ func nodeArchName(swiftArch arch: String) -> String {
     }
 }
 
-/// The operating system this was built for, as `#if os(...)` names it.
+/// The operating system this was built for, as `#if os(...)` names it; a Mac Catalyst app (an iOS
+/// build to `#if os`) as the Mac it runs on, which every rule of the SDK treats it as.
 let swiftOS: String = {
-    #if os(macOS)
+    #if os(macOS) || targetEnvironment(macCatalyst)
     return "macOS"
     #elseif os(iOS)
     return "iOS"
@@ -259,13 +307,25 @@ let swiftArch: String = {
     #endif
 }()
 
-/// The real system: IOKit on macOS, the files on Linux.
+/// The real system: IOKit on macOS (a Mac Catalyst app's included), the Keychain on iOS and iPadOS,
+/// the files on Linux.
 struct SystemMachineIdSource: MachineIdSource {
+    /// The product whose install id an iPhone or iPad keeps (its Keychain item's account).
+    var product = ""
+
     var platform: String { nodePlatform }
 
     func platformUUID() async throws -> String? {
-        #if os(macOS)
+        #if os(macOS) || targetEnvironment(macCatalyst)
         return PlatformExpert.uuid()
+        #else
+        return nil
+        #endif
+    }
+
+    func installId() async throws -> String? {
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        return try await InstallId.keychain(product: product)
         #else
         return nil
         #endif

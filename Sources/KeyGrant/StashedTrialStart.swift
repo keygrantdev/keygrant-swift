@@ -1,7 +1,8 @@
 import Foundation
 
-/// The one stored item a trial stash keeps its start in: a Keychain item on macOS
-/// (`KeychainTrialStash`), a dictionary in a test.
+/// One stored item: the one a trial stash keeps its start in (`KeychainTrialStash`), or the one an
+/// iPhone or iPad keeps its install id in (`InstallId`). A Keychain item (`KeychainItem`) on Apple
+/// platforms, a dictionary in a test.
 protocol StashItem: Sendable {
     /// The item's data; nil when there is no item. Throws when it cannot be read (a locked
     /// keychain, an app without the entitlement it needs).
@@ -31,6 +32,18 @@ enum StashedTrialStart {
         }
         if let start = start(in: stored), start <= ms { return }
         try await item.update(value)
+    }
+
+    /// `read(_:)`, given up after `seconds` on `ticker` (`TimeoutError`, which the SDK reads as no
+    /// stash): for a stash that bounds itself, the SDK bounding none.
+    static func read(_ item: some StashItem, within seconds: TimeInterval, on ticker: any Ticker) async throws -> Int? {
+        try await withTimeout(seconds, on: ticker) { try await read(item) }
+    }
+
+    /// `write(_:to:)`, its caller answered after `seconds` on `ticker` (`TimeoutError`). The write
+    /// itself is not stopped: it goes on to finish, still only on what it read.
+    static func write(_ ms: Int, to item: some StashItem, within seconds: TimeInterval, on ticker: any Ticker) async throws {
+        try await withTimeout(seconds, on: ticker) { try await write(ms, to: item) }
     }
 
     /// The start an item's data holds, or nil when it holds none.
