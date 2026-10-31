@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0
+
+- The first stable release. Nothing changed since 0.9.0 but the version number.
+
 ## 0.9.0
 
 - iPhone and iPad: the package builds for iOS and iPadOS 15 and later, with the same API. The device is an
